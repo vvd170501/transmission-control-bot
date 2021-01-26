@@ -8,6 +8,10 @@ import traceback
 from enum import Enum
 from functools import wraps, partial
 from io import BytesIO
+from signal import SIGINT, SIGTERM, SIGABRT
+
+BASE_DIR = pathlib.Path(__file__).parent
+logging.basicConfig(filename=str(BASE_DIR.joinpath('tbot.log').absolute()), style="{", format="[{asctime}] {threadName}:{levelname} - {message}", datefmt="%Y-%m-%d %H:%M:%S")
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler
@@ -17,16 +21,13 @@ from transmission_rpc import Client as Transmission
 
 import strings
 from db import BotDB
+from ftp import FTPDrop
 
 valid_dirname = re.compile(r'^[\w. -]+$')
 offset_query = re.compile(r'^offset=(\w+),(\w+)$')
 hash_query = re.compile(r'^hash=(\w+),(\d+),(\w+)$')
 toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+),(\w+)$')
 del_query = re.compile(r'^(del2?)=(\w+),(\d+),(\w+)$')
-
-BASE_DIR = pathlib.Path(__file__).parent
-
-logging.basicConfig(filename=str(BASE_DIR.joinpath('tbot.log').absolute()), style="{", format="[{asctime}] {levelname} - {message}", datefmt="%Y-%m-%d %H:%M:%S")
 
 
 class State(Enum):
@@ -46,7 +47,7 @@ def log_error():
 def speed_format(kbps):
     if kbps < 1000:
         return f'{kbps} KB/s'
-    return f'{kbps/1000:.2f} MB/s'    
+    return f'{kbps/1000:.2f} MB/s'
 
 def restricted_template(func, *, whitelist):
     @wraps(func)
@@ -68,12 +69,19 @@ class TBot():
         self.reserved_space = config['reserved_space']
         self.password = config['password']
         self.client = Transmission(**config['client_cfg'])
-        self.updater = Updater(token=config['token'], use_context=True)
+        self.updater = Updater(token=config['token'], use_context=True, user_sig_handler=self.signal)
         self.dispatcher = self.updater.dispatcher
         self.jq = self.updater.job_queue
         self.db = BotDB(db_path)
+        self.ftp_cfg = config['ftp']
+        self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
 
-        self.try_create_limit_timer()
+        self.try_create_timer('reset_limit', self.reset_limit)
+
+        ftp_timer = self.db.get_timer('stop_ftp')
+        if ftp_timer is not None:
+            self.stop_ftp(None)  # remove timer and notify
+
         self.create_dl_checker()
         self.create_db_updater()
         self.create_disk_checker()
@@ -113,11 +121,14 @@ class TBot():
             },
             conv_fallbacks
         ), 0)
-        
+
         self.handlers['list_offset'] = (CallbackQueryHandler(self.list_offset, pattern=offset_query), 0)
         self.handlers['torrent_info'] = (CallbackQueryHandler(self.torrent_info, pattern=hash_query), 0)
         self.handlers['toggle_torrent'] = (CallbackQueryHandler(self.toggle_torrent, pattern=toggle_query), 0)
         self.handlers['del_torrent'] = (CallbackQueryHandler(self.del_torrent, pattern=del_query), 0)
+
+        self.handlers['ftp'] = (CommandHandler('ftp', restricted(self.ftp), filters=Filters.user(user_id=self.admins)), 0)
+        self.handlers['noftp'] = (CommandHandler('noftp', restricted(self.no_ftp), filters=Filters.user(user_id=self.admins)), 0)
 
         self.handlers['disk'] = (CommandHandler('disk', restricted(self.show_disk_usage)), 0)
         self.handlers['auth']= (MessageHandler(Filters.text & (~Filters.command), self.auth), 1)
@@ -166,6 +177,20 @@ class TBot():
             msg = 'Incorrect password!'
         self.answer(update, context, msg)
 
+    def ftp(self, update, context):
+        creds = self.ftpd.start(self.ftp_cfg['root'], True)
+        self.answer(update, context, strings.ftp_start.format(*creds), parse_mode='markdown')
+        self.db.set_timer('stop_ftp', time.time() + self.ftp_cfg['tl'])
+        self.try_create_timer('stop_ftp', self.stop_ftp)
+        # TODO add permissions
+
+    def no_ftp(self, update, context):
+        if not self.ftpd.active():
+            return self.answer(update, context, strings.ftp_stopped)
+        self.cancel_timer('stop_ftp')
+        self.ftpd.stop()
+        self.answer(update, context, strings.ftp_stop)
+
 # --------------------------------------------------------------------------------------------------
 # setlimit conversation
 # --------------------------------------------------------------------------------------------------
@@ -182,7 +207,7 @@ class TBot():
     def sel_ul(self, update, context):
         context.chat_data['ul'] = strings.ul_buttons[update.message.text]
         if not (context.chat_data['dl'] or context.chat_data['ul']):
-            self.cancel_limit_timer()
+            self.cancel_timer('reset_limit')
             self.reset_limit_now()
             self.answer(update, context, strings.limit_reset, reply_markup=ReplyKeyboardRemove())
             self.notify_limit_change(update.effective_user.id)
@@ -197,8 +222,8 @@ class TBot():
         self.answer(update, context, strings.limit_set, reply_markup=ReplyKeyboardRemove())
         context.chat_data.clear()
         duration = strings.dur_buttons[update.message.text]
-        self.db.set_timer(time.time() + duration if duration is not None else None)
-        self.try_create_limit_timer()
+        self.db.set_timer('reset_limit', time.time() + duration if duration is not None else None)
+        self.try_create_timer('reset_limit', self.reset_limit)
         self.notify_limit_change(update.effective_user.id)
         return State.END
 
@@ -360,7 +385,7 @@ class TBot():
                 self.client.remove_torrent(torr.id, delete_data=True)
                 self.answer(update, context, strings.nohash, reply_markup=ReplyKeyboardRemove())
                 return
-            
+
             uid = update.effective_user.id
             if self.db.has_torrent(t_hash):
                 self.answer(update, context, strings.duplicate, reply_markup=ReplyKeyboardRemove())
@@ -399,28 +424,27 @@ class TBot():
 # jobs
 # --------------------------------------------------------------------------------------------------
 
-    def try_create_limit_timer(self):
-        self.cancel_limit_timer()
-        timer = self.db.get_timer()
+    def try_create_timer(self, name, callback):
+        self.cancel_timer(name)
+        timer = self.db.get_timer(name)
         if timer is None:
             return
         dt = timer - time.time()
         if dt <= 0:
-            self.reset_limit_now()
-            self.notify_limit_change() #TODO refactor?
+            callback(None)
         else:
-            self.jq.run_once(self.reset_limit, dt)
+            self.jq.run_once(callback, dt)
 
-    def cancel_limit_timer(self):
-        for job in self.jq.get_jobs_by_name('reset_limit'):
+    def cancel_timer(self, name):
+        for job in self.jq.get_jobs_by_name(name):
             job.schedule_removal()
 
     def create_dl_checker(self): #TODO is db threadsafe? add lock/etc
         self.jq.run_repeating(self.check_downloads, 60, first=5)
- 
+
     def create_disk_checker(self):
         self.jq.run_repeating(self.check_disk, 60 * 10, first=75)
-       
+
     def create_db_updater(self): #TODO is db threadsafe? add lock/etc
         self.jq.run_repeating(self.update_db, 60 * 15, first=30)
 
@@ -428,9 +452,16 @@ class TBot():
 # job callbacks
 # --------------------------------------------------------------------------------------------------
 
+    def stop_ftp(self, context):  # context may be None
+        if self.ftpd.active():
+            self.ftpd.stop()
+        self.db.set_timer('stop_ftp', None)
+        for user in self.admins:
+            self.updater.bot.send_message(chat_id=user, text=strings.ftp_stop, disable_notification=True)
+
     def reset_limit_now(self):
         self.set_limit(None, None)
-        self.db.set_timer(None)
+        self.db.set_timer('reset_limit', None)
 
     def reset_limit(self, context):
         self.reset_limit_now()
@@ -517,7 +548,7 @@ class TBot():
             ul_limit = speed_format(session.speed_limit_up)
         else:
             ul_limit = '-'
-        timer = self.db.get_timer()
+        timer = self.db.get_timer('reset_limit')
         if dl_limit == ul_limit == '-' or timer is None:
             return not dl_limit == ul_limit == '-', strings.perm_limit.format(dl_limit, ul_limit)
         else:
@@ -540,6 +571,12 @@ class TBot():
         used = (stats.f_blocks - stats.f_bfree) * stats.f_bsize
         avail = stats.f_bavail * stats.f_bsize
         return used, avail
+
+    def signal(self, signum, frame):
+        if signum not in [SIGINT, SIGTERM, SIGABRT]:
+            return
+        if hasattr(self, 'ftpd'):
+            self.ftpd.stop()
 
 # --------------------------------------------------------------------------------------------------
 # BOT END

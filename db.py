@@ -4,7 +4,7 @@ import shelve2 as shelve
 class BotDB():
     def __init__(self, path):
         self.db = shelve.open(path)
-    
+
     def whitelist_user(self, user):
         self.db['whitelist'].append(user)
         self.db.sync(['whitelist'])
@@ -12,11 +12,11 @@ class BotDB():
     def whitelist(self):
         return self.db['whitelist']
 
-    def set_timer(self, timer):
-        self.db['limit_timer'] = timer
+    def set_timer(self, name, time):
+        self.db[f'timer_{name}'] = time
 
-    def get_timer(self):
-        return self.db['limit_timer']
+    def get_timer(self, name):
+        return self.db.get(f'timer_{name}')
 
     def update_torrents(self, torrents):
         """torrents - list of (hash, active)"""
@@ -67,7 +67,7 @@ class BotDB():
     def get_owner(self, t_hash):
         return self.db['torrents']['owner'][t_hash]
 
-    def all_torrents(self):   
+    def all_torrents(self):
         return list(self.db['torrents']['owner'].keys())
 
     def owned_torrents(self, owner):

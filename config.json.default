@@ -4,5 +4,6 @@
     "admins": [0],
     "rootdir": "/mnt/data",
     "reserved_space": 1000000000,
-    "client_cfg": {"host": "127.0.0.1", "port": 9091, "username": "transmission", "password": "password"}
+    "client_cfg": {"host": "127.0.0.1", "port": 9091, "username": "transmission", "password": "password"},
+    "ftp": {"address": "192.168.1.10:2100", "root": "/mnt/data", "tl": 3600}
 }
