@@ -1,0 +1,8 @@
+{
+    "token": "123456:xxxxxxx",
+    "password": "bot_password",
+    "admins": [0],
+    "rootdir": "/mnt/data",
+    "reserved_space": 1000000000,
+    "client_cfg": {"host": "127.0.0.1", "port": 9091, "username": "transmission", "password": "password"}
+}
