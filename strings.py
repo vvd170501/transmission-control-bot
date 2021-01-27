@@ -103,7 +103,7 @@ def format_torrent(t, override_status=None):
     lines = [
             t.name,
             f'Скачано: {format_size(t.sizeWhenDone - t.leftUntilDone)} / {format_size(t.sizeWhenDone)} ({t.progress:.2f}%)',
-            f'Статус: {status[t.status if override_status is None else override_status][0]}',
+            f'Статус: {status[override_status or t.status][0]}',
             f'⬇ {format_speed(t.rateDownload)} | ⬆ {format_speed(t.rateUpload)}'
             ]
     if override_status is None:
@@ -111,7 +111,7 @@ def format_torrent(t, override_status=None):
             lines[2] += f' от {t.peersSendingToUs} из {t.peersConnected} пиров'
             lines.append(f'Осталось: {t.format_eta()}')
         elif t.status == 'seeding':
-            lines[2] += f' к {t.peersGettingFromUs} из {t.peersConnected} пиров'
+            lines[2] += f' к {t.peersGettingFromUs} из {t.peersConnected} пиров\nРейтинг раздачи: {t.uploadRatio:.02f}'
     return '\n'.join(lines)
 
 del_confirm = 'Вы точно хотите удалить торрент "{}" и скачанные файлы?'
@@ -122,4 +122,5 @@ right = 'Вы уже на последней странице!'
 
 ftp_start = 'FTP-сервер запущен\nЛогин: `{}`\nПароль: `{}`'
 ftp_stop = 'FTP-сервер остановлен'
+ftp_unshare = 'Доступ по FTP к "{}" закрыт'
 ftp_stopped = 'FTP-сервер уже остановлен'

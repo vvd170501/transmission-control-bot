@@ -76,11 +76,7 @@ class TBot():
         self.ftp_cfg = config['ftp']
         self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
 
-        self.try_create_timer('reset_limit', self.reset_limit)
-
-        ftp_timer = self.db.get_timer('stop_ftp')
-        if ftp_timer is not None:
-            self.stop_ftp(None)  # remove timer and notify
+        self.restore_persistent_timer('reset_limit', self.reset_limit)
 
         self.create_dl_checker()
         self.create_db_updater()
@@ -178,17 +174,18 @@ class TBot():
         self.answer(update, context, msg)
 
     def ftp(self, update, context):
-        creds = self.ftpd.start(self.ftp_cfg['root'], True)
+        # NOTE on restart all shares are silently deleted
+        creds = self.ftpd.share(self.ftp_cfg['root'], True)
         self.answer(update, context, strings.ftp_start.format(*creds), parse_mode='markdown')
-        self.db.set_timer('stop_ftp', time.time() + self.ftp_cfg['tl'])
-        self.try_create_timer('stop_ftp', self.stop_ftp)
-        # TODO add permissions
+        self.create_timer('stop_ftp_root', self.stop_ftp, time.time() + self.ftp_cfg['tl'], (self.ftp_cfg['root'], update.effective_chat.id, None))
+        # TODO add torrent sharing, select tl (based on size? 1h/18GB(5MBps)), show tl
+        # will not work if torrent contains multiple files/dirs in rootdir?
 
     def no_ftp(self, update, context):
         if not self.ftpd.active():
             return self.answer(update, context, strings.ftp_stopped)
-        self.cancel_timer('stop_ftp')
-        self.ftpd.stop()
+        self.cancel_timer('stop_ftp_root')
+        self.ftpd.unshare(self.ftp_cfg['root'])
         self.answer(update, context, strings.ftp_stop)
 
 # --------------------------------------------------------------------------------------------------
@@ -222,8 +219,7 @@ class TBot():
         self.answer(update, context, strings.limit_set, reply_markup=ReplyKeyboardRemove())
         context.chat_data.clear()
         duration = strings.dur_buttons[update.message.text]
-        self.db.set_timer('reset_limit', time.time() + duration if duration is not None else None)
-        self.try_create_timer('reset_limit', self.reset_limit)
+        self.create_persistent_timer('reset_limit', self.reset_limit, time.time() + duration if duration is not None else None)
         self.notify_limit_change(update.effective_user.id)
         return State.END
 
@@ -424,16 +420,23 @@ class TBot():
 # jobs
 # --------------------------------------------------------------------------------------------------
 
-    def try_create_timer(self, name, callback):
-        self.cancel_timer(name)
+    def create_persistent_timer(self, name, callback, timer):
+        self.db.set_timer(name, timer)
+        self.create_timer(name, callback, timer)
+
+    def restore_persistent_timer(self, name, callback):
         timer = self.db.get_timer(name)
+        self.create_timer(name, callback, timer)
+
+    def create_timer(self, name, callback, timer, context=None):
+        self.cancel_timer(name)  # timer is None -> cancel only
         if timer is None:
             return
         dt = timer - time.time()
         if dt <= 0:
-            callback(None)
+            callback(context)
         else:
-            self.jq.run_once(callback, dt)
+            self.jq.run_once(callback, dt, context=context)
 
     def cancel_timer(self, name):
         for job in self.jq.get_jobs_by_name(name):
@@ -452,12 +455,12 @@ class TBot():
 # job callbacks
 # --------------------------------------------------------------------------------------------------
 
-    def stop_ftp(self, context):  # context may be None
+    def stop_ftp(self, context):
+        path, user, torrent = context.job.context
         if self.ftpd.active():
-            self.ftpd.stop()
-        self.db.set_timer('stop_ftp', None)
-        for user in self.admins:
-            self.updater.bot.send_message(chat_id=user, text=strings.ftp_stop, disable_notification=True)
+            self.ftpd.unshare(path)
+        msg = strings.ftp_stop if torrent is None else strings.ftp.unshare.format(torrent)
+        self.updater.bot.send_message(chat_id=user, text=msg, disable_notification=True)
 
     def reset_limit_now(self):
         self.set_limit(None, None)
@@ -576,7 +579,7 @@ class TBot():
         if signum not in [SIGINT, SIGTERM, SIGABRT]:
             return
         if hasattr(self, 'ftpd'):
-            self.ftpd.stop()
+            self.ftpd.force_stop()
 
 # --------------------------------------------------------------------------------------------------
 # BOT END
