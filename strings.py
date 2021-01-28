@@ -1,3 +1,5 @@
+import time
+
 units = ['B', 'KB', 'MB', 'GB', 'TB']
 
 def format_size(size):
@@ -93,19 +95,22 @@ status = {
     'stopping': ('Остановка...', '⏳⏸⏳')
 }
 
-def format_torrents(torrents, offset, n):
+def format_torrents(torrents, offset, n, ftp):
     if not torrents:
         return 'Торрентов не найдено!'
-    lines = [f'Торренты {offset+1}-{offset+len(torrents)} из {n}'] + [f'{i+1}. {t.name} ({format_size(t.sizeWhenDone)}) {status[t.status][1]}' + (f' {t.progress:.2f}%' if t.status.startswith('down') else '') for i, t in enumerate(torrents)]
+    lines = [f'Торренты {offset+1}-{offset+len(torrents)} из {n}'] + [f'{i+1}. {t.name} ({format_size(t.sizeWhenDone)}) {status[t.status][1]}' + (f' {t.progress:.2f}%' if t.status.startswith('down') else '') + (' 📂' if has_ftp else '') for i, (t, has_ftp) in enumerate(zip(torrents, ftp))]
     return '\n'.join(lines)
 
-def format_torrent(t, override_status=None):
+def format_torrent(t, override_status=None, ftp=False):
     lines = [
             t.name,
             f'Скачано: {format_size(t.sizeWhenDone - t.leftUntilDone)} / {format_size(t.sizeWhenDone)} ({t.progress:.2f}%)',
             f'Статус: {status[override_status or t.status][0]}',
             f'⬇ {format_speed(t.rateDownload)} | ⬆ {format_speed(t.rateUpload)}'
             ]
+    if ftp:
+        lines[0] += ' 📂'
+
     if override_status is None:
         if t.status == 'downloading':
             lines[2] += f' от {t.peersSendingToUs} из {t.peersConnected} пиров'
@@ -114,13 +119,23 @@ def format_torrent(t, override_status=None):
             lines[2] += f' к {t.peersGettingFromUs} из {t.peersConnected} пиров\nРейтинг раздачи: {t.uploadRatio:.02f}'
     return '\n'.join(lines)
 
+def format_ftp(addr, details):
+    if details is None:
+        return 'Доступ по FTP закрыт'
+    login, password, timer = details
+    timer_info = time.strftime('%H:%M:%S %Z', time.localtime(timer))
+    return f'Адрес: `{addr}`\nЛогин: `{login}`\nПароль: `{password}`\nДействует до: {timer_info}'
+
+ftp_error = 'Неизвестная ошибка, невозможно получить FTP-доступ'
+ftp_stop_access = 'Доступ прекращён'
+
 del_confirm = 'Вы точно хотите удалить торрент "{}" и скачанные файлы?'
 deleted = 'Торрент был удалён'
 
 left = 'Вы уже на первой странице!'
 right = 'Вы уже на последней странице!'
 
-ftp_start = 'FTP-сервер запущен\nЛогин: `{}`\nПароль: `{}`'
+ftp_start = 'FTP-сервер запущен\nЛогин: `{}`\nПароль: `{}`\nДоступ действует до {}'
 ftp_stop = 'FTP-сервер остановлен'
 ftp_unshare = 'Доступ по FTP к "{}" закрыт'
 ftp_stopped = 'FTP-сервер уже остановлен'

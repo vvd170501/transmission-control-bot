@@ -27,6 +27,7 @@ valid_dirname = re.compile(r'^[\w. -]+$')
 offset_query = re.compile(r'^offset=(\w+),(\w+)$')
 hash_query = re.compile(r'^hash=(\w+),(\d+),(\w+)$')
 toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+),(\w+)$')
+ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+),(\w+)$')
 del_query = re.compile(r'^(del2?)=(\w+),(\d+),(\w+)$')
 
 
@@ -75,6 +76,7 @@ class TBot():
         self.db = BotDB(db_path)
         self.ftp_cfg = config['ftp']
         self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
+        self.shares = {}  # (hash, user): timer
 
         self.restore_persistent_timer('reset_limit', self.reset_limit)
 
@@ -121,6 +123,7 @@ class TBot():
         self.handlers['list_offset'] = (CallbackQueryHandler(self.list_offset, pattern=offset_query), 0)
         self.handlers['torrent_info'] = (CallbackQueryHandler(self.torrent_info, pattern=hash_query), 0)
         self.handlers['toggle_torrent'] = (CallbackQueryHandler(self.toggle_torrent, pattern=toggle_query), 0)
+        self.handlers['ftp_access'] = (CallbackQueryHandler(self.ftp_access, pattern=ftp_query), 0)
         self.handlers['del_torrent'] = (CallbackQueryHandler(self.del_torrent, pattern=del_query), 0)
 
         self.handlers['ftp'] = (CommandHandler('ftp', restricted(self.ftp), filters=Filters.user(user_id=self.admins)), 0)
@@ -175,17 +178,19 @@ class TBot():
 
     def ftp(self, update, context):
         # NOTE on restart all shares are silently deleted
-        creds = self.ftpd.share(self.ftp_cfg['root'], True)
-        self.answer(update, context, strings.ftp_start.format(*creds), parse_mode='markdown')
-        self.create_timer('stop_ftp_root', self.stop_ftp, time.time() + self.ftp_cfg['tl'], (self.ftp_cfg['root'], update.effective_chat.id, None))
-        # TODO add torrent sharing, select tl (based on size? 1h/18GB(5MBps)), show tl
-        # will not work if torrent contains multiple files/dirs in rootdir?
+        creds = self.ftpd.share(self.ftp_cfg['root'], True, 'root')
+        self.shares['root'] = time.time() + self.ftp_cfg['tl']
+        timer_info = time.strftime('%H:%M:%S %Z', time.localtime(self.shares['root']))
+        self.create_timer('stop_ftp_root', self.stop_ftp, self.shares['root'], ('root', update.effective_chat.id, None))
+
+        self.answer(update, context, strings.ftp_start.format(*creds, timer_info), parse_mode='markdown')
 
     def no_ftp(self, update, context):
-        if not self.ftpd.active():
+        if 'root' not in self.shares:
             return self.answer(update, context, strings.ftp_stopped)
         self.cancel_timer('stop_ftp_root')
-        self.ftpd.unshare(self.ftp_cfg['root'])
+        self.ftpd.unshare('root')
+        del self.shares['root']
         self.answer(update, context, strings.ftp_stop)
 
 # --------------------------------------------------------------------------------------------------
@@ -249,7 +254,11 @@ class TBot():
 
         n = len(torrents)
         torrents = torrents[offset:offset + 10]
-        msg = strings.format_torrents(torrents, offset, n)
+
+        uid = update.effective_user.id
+        ftp = [(t.hashString, uid) in self.shares for t in torrents]
+
+        msg = strings.format_torrents(torrents, offset, n, ftp)
         markup = build_menu(torrents, offset, n)
         if message is None:
             self.answer(update, context, msg, reply_markup=markup)
@@ -290,20 +299,24 @@ class TBot():
         return sorted(self.client.get_torrents(ids=ids, arguments=['id', 'hashString', 'name', 'status', 'progress', 'sizeWhenDone', 'leftUntilDone']), key=lambda t: (t.name, t.hashString))
 
     def _torrent_info(self, update, context, t_hash, offset, owner, stopping=False):
+        user = update.effective_user.id
+        key = (t_hash, user)
+
         def build_menu(t_hash, offset, owner, active):
             action = 'stop' if active else 'run'
             toggle_btn = InlineKeyboardButton('⏸ Остановить' if active else '▶ Запустить', callback_data=f'{action}={t_hash},{offset},{owner}')
+            ftp_btn = InlineKeyboardButton('📁 Настройки FTP-доступа', callback_data=f'ftp={t_hash},{offset},{owner}')
             delete_btn = InlineKeyboardButton('❌ Удалить торрент и скачанные файлы', callback_data=f'del={t_hash},{offset},{owner}')
             back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={offset},{owner}')
             refresh_btn = InlineKeyboardButton('🔄', callback_data=f'hash={t_hash},{offset},{owner}')
-            return InlineKeyboardMarkup([[toggle_btn], [delete_btn], [back_btn, refresh_btn]])
+            return InlineKeyboardMarkup([[toggle_btn], [ftp_btn], [delete_btn], [back_btn, refresh_btn]])
 
         torrent = self.client.get_torrent(t_hash)
-        msg = strings.format_torrent(torrent, override_status='stopping' if stopping else None)
+        msg = strings.format_torrent(torrent, override_status='stopping' if stopping else None, ftp=key in self.shares)
         try:
             update.callback_query.message.edit_text(msg, reply_markup=build_menu(t_hash, offset, owner, torrent.status!='stopped' and not stopping))
         except BadRequest:
-            pass
+            pass  # old text
         update.callback_query.answer()
 
 
@@ -320,9 +333,73 @@ class TBot():
         self._torrent_info(update, context, t_hash, offset, owner, action != 'run')
         update.callback_query.answer()
 
+    def ftp_access(self, update, context):
+        # TODO select tl (manually / based on size? 1h/18GB(5MBps))
+        action, t_hash, offset, owner = context.match.groups()
+        user = update.effective_user.id
+        key = (t_hash, user)
+
+        def build_menu(t_hash, offset, owner, shared):
+            start_btn = InlineKeyboardButton('▶ Открыть доступ' if not shared else '🔄 Продлить доступ', callback_data=f'+ftp={t_hash},{offset},{owner}')
+            stop_btn = InlineKeyboardButton('⏹️ Остановить доступ', callback_data=f'-ftp={t_hash},{offset},{owner}')
+            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'hash={t_hash},{offset},{owner}')
+            return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
+
+        details = None
+        if action == '-':
+            if key in self.shares:
+                self.cancel_timer(f'stop_ftp_{key}')
+                self.ftpd.unshare(key)
+                del self.shares[key]
+            self.answer_callback(update, context, strings.ftp_stop_access)
+            self._torrent_info(update, context, t_hash, offset, owner)
+            return
+        elif action == '+':
+            if key not in self.shares:
+                try:
+                    torrent = self.client.get_torrent(t_hash)
+                    root = pathlib.Path(torrent.downloadDir) / pathlib.Path(torrent.files()[0].name).parts[0]
+
+                except Exception as e:
+                    logging.error('FTP access error (cannot find torrent root):' + str(e))
+                    self.answer_callback(update, context, strings.ftp_error)
+                    return
+
+                creds = self.ftpd.share(root, False, key)
+            else:
+                creds = self.ftpd.get_creds(key)
+            if creds is None:
+                logging.error('FTP access error (no credentials found)')
+                self.answer_callback(update, context, strings.ftp_error)
+                return
+
+
+            timer = time.time() + self.ftp_cfg['tl']
+            if key not in self.shares:
+                self.create_timer(f'stop_ftp_{key}', self.stop_ftp, timer, (key, update.effective_chat.id, torrent.name))
+            else:
+                self.reschedule_timer(f'stop_ftp_{key}', timer)
+            self.shares[key] = timer
+            details = (*creds, timer)
+
+        else:
+            creds = self.ftpd.get_creds(key)
+            timer = self.shares.get(key)
+            if creds is not None and timer is not None:
+                details = (*creds, timer)
+
+        msg = strings.format_ftp(self.ftp_cfg['address'], details)
+
+        try:
+            update.callback_query.message.edit_text(msg, reply_markup=build_menu(t_hash, offset, owner, key in self.shares), parse_mode='markdown')
+        except BadRequest:
+            pass
+        update.callback_query.answer()
+
     def del_torrent(self, update, context):
         action, t_hash, offset, owner = context.match.groups()
         if action == 'del2':
+            # FTP access may still be open, eventually it will be closed (will just return error to clients)
             self.client.remove_torrent(t_hash, delete_data=True)
             self.db.remove_torrent(t_hash)
             back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={offset},{owner}')
@@ -436,11 +513,18 @@ class TBot():
         if dt <= 0:
             callback(context)
         else:
-            self.jq.run_once(callback, dt, context=context)
+            self.jq.run_once(callback, dt, context=context, name=name)
 
     def cancel_timer(self, name):
         for job in self.jq.get_jobs_by_name(name):
             job.schedule_removal()
+
+    def reschedule_timer(self, name, timer):
+        for job in self.jq.get_jobs_by_name(name):
+            callback = job.callback
+            context = job.context
+            job.schedule_removal()
+            self.create_timer(name, callback, timer, context)
 
     def create_dl_checker(self): #TODO is db threadsafe? add lock/etc
         self.jq.run_repeating(self.check_downloads, 60, first=5)
@@ -456,10 +540,13 @@ class TBot():
 # --------------------------------------------------------------------------------------------------
 
     def stop_ftp(self, context):
-        path, user, torrent = context.job.context
+        key, user, torrent = context.job.context
+        if key not in self.shares:  # WTF??
+            return
+        del self.shares[key]
         if self.ftpd.active():
-            self.ftpd.unshare(path)
-        msg = strings.ftp_stop if torrent is None else strings.ftp.unshare.format(torrent)
+            self.ftpd.unshare(key)
+        msg = strings.ftp_stop if torrent is None else strings.ftp_unshare.format(torrent)
         self.updater.bot.send_message(chat_id=user, text=msg, disable_notification=True)
 
     def reset_limit_now(self):
