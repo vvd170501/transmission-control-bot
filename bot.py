@@ -277,6 +277,9 @@ class TBot():
             uid = update.effective_user.id
             torrents = self._get_torrents(self.db.owned_torrents(uid))
         else:
+            if update.effective_user.id not in self.admins:
+                logging.warning(f'Unauthorized access attempt (list_offset, user {update.effective_user.id})')
+                return
             torrents = self._get_torrents(None)
         try:
             self.show_torrents(update, context, torrents, owner, int(offset), message=update.callback_query.message)
@@ -334,6 +337,7 @@ class TBot():
         update.callback_query.answer()
 
     def ftp_access(self, update, context):
+        # TODO allow filtered access to categories
         # TODO select tl (manually / based on size? 1h/18GB(5MBps))
         action, t_hash, offset, owner = context.match.groups()
         user = update.effective_user.id
