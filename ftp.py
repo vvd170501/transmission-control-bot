@@ -28,7 +28,7 @@ class RestrictedFS(AbstractedFS):
         self._root_file = None
 
         rootpath = Path(root)
-        if rootpath.is_file():  # should only used with readonly FS
+        if rootpath.is_file():  # should only be used with readonly FS (??)
             self._root_file = rootpath.name
             self._fakeroot = self._root_file + os.sep
             self._fakeroot2 = str(rootpath) + os.sep

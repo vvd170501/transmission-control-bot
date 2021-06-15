@@ -127,6 +127,7 @@ def format_ftp(addr, details):
     return f'Адрес: `{addr}`\nЛогин: `{login}`\nПароль: `{password}`\nДействует до: {timer_info}'
 
 ftp_error = 'Неизвестная ошибка, невозможно получить FTP-доступ'
+ftp_incomplete = 'Невозможно получить FTP-доступ (загрузка не завершена)'
 ftp_stop_access = 'Доступ прекращён'
 
 del_confirm = 'Вы точно хотите удалить торрент "{}" и скачанные файлы?'

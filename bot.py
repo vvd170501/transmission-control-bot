@@ -359,16 +359,18 @@ class TBot():
             self._torrent_info(update, context, t_hash, offset, owner)
             return
         elif action == '+':
-            if key not in self.shares:
+            if key not in self.shares:  # TODO!! check jq implementation. is a lock required to avoid data races?
                 try:
                     torrent = self.client.get_torrent(t_hash)
                     root = pathlib.Path(torrent.downloadDir) / pathlib.Path(torrent.files()[0].name).parts[0]
-
                 except Exception as e:
                     logging.error('FTP access error (cannot find torrent root):' + str(e))
                     self.answer_callback(update, context, strings.ftp_error)
                     return
 
+                if torrent.left_until_done > 0:  # allow sharing if incomplete_dir is not used?
+                    self.answer_callback(update, context, strings.ftp_incomplete)
+                    return
                 creds = self.ftpd.share(root, False, key)
             else:
                 creds = self.ftpd.get_creds(key)
@@ -376,7 +378,6 @@ class TBot():
                 logging.error('FTP access error (no credentials found)')
                 self.answer_callback(update, context, strings.ftp_error)
                 return
-
 
             timer = time.time() + self.ftp_cfg['tl']
             if key not in self.shares:
@@ -661,6 +662,7 @@ class TBot():
         self.client.set_session(**params)
 
     def get_disk_stats(self):
+        # use self.client.free_space(...)?
         stats = os.statvfs(self.rootdir)
         used = (stats.f_blocks - stats.f_bfree) * stats.f_bsize
         avail = stats.f_bavail * stats.f_bsize
