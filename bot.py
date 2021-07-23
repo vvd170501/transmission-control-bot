@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
+
+import argparse
 import logging
 import os
 import pathlib
 import re
+import sys
 import time
 import traceback
 from enum import Enum
@@ -9,12 +13,12 @@ from functools import wraps, partial
 from io import BytesIO
 from signal import SIGINT, SIGTERM, SIGABRT
 
-import pyyaml
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler
 from telegram.ext.filters import Filters
 from telegram.error import BadRequest
 from transmission_rpc import Client as Transmission
+import yaml
 
 import strings
 from db import BotDB
@@ -60,7 +64,7 @@ def restricted_template(func, *, whitelist):
 class TBot():
     def __init__(self, cfg_path, db_path):
         with open(cfg_path) as f:
-            config = pyyaml.safe_load(f)
+            config = yaml.safe_load(f)
 
         self.admins = config['admins']
         self.rootdir = config['rootdir']
@@ -688,9 +692,21 @@ class TBot():
 # --------------------------------------------------------------------------------------------------
 
 def main():
-    logging.basicConfig(filename=str(BASE_DIR.joinpath('tbot.log').absolute()), style="{", format="[{asctime}] {threadName}:{levelname} - {message}", datefmt="%Y-%m-%d %H:%M:%S")
-    cfg_path = str(BASE_DIR.joinpath('config.yaml').absolute())
-    db_path = str(BASE_DIR.joinpath('data.db').absolute())
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', metavar='FILE', help='Config file (defaults to "config.yaml")')
+    parser.add_argument('--db', metavar='FILE', help='DB file (defaults to "data.db")')
+    parser.add_argument('--log', metavar='FILE', help='Log file (If not present, write to stderr)')
+    args = parser.parse_args()
+
+    BASE_DIR = pathlib.Path(__file__).parent
+    logging_cfg = {'style': '{', 'format': '[{asctime}] {threadName}:{levelname} - {message}', 'datefmt': '%Y-%m-%d %H:%M:%S'}
+    if args.log:
+        logging_cfg['filename'] = args.log
+    else:
+        logging_cfg['stream'] = sys.stderr
+    logging.basicConfig(**logging_cfg)
+    cfg_path = args.config or str(BASE_DIR.joinpath('config.yaml').absolute())
+    db_path = args.db or str(BASE_DIR.joinpath('data.db').absolute())
     bot = TBot(cfg_path, db_path)
 
 

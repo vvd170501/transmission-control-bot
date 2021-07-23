@@ -17,9 +17,8 @@ The bot loads configuration from a `config.yaml` file. See [example](https://git
 ## TODO:
  - [ ] Move all strings to a separate module
  - [ ] Add language choice (?)
- - [ ] Allow using custom paths for config/db/log
  - [ ] Add disk quotas (?)
  - [ ] Allow disabling free space checker
  - [ ] Make pyftpdlib requirement optional
  - [ ] Add FTP access for standard categories
- - [ ] Allow configuring FTP time-limit
+ - [ ] User-configurable FTP time-limit (?)

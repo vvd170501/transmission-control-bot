@@ -8,7 +8,7 @@ admins: [123, 456]
 rootdir: "/mnt/data/transmission_downloads"
 # Minimal amount of free space (in bytes) on the partition with rootdir.
 # If the amount of free space goes below this number, all torrents are automatically stopped.
-reserved_space": 1000000000
+reserved_space: 1000000000
 
 client_cfg:  # Options for transmission-rpc client
     host: "127.0.0.1"
