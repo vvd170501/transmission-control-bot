@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import pathlib
@@ -10,9 +9,7 @@ from functools import wraps, partial
 from io import BytesIO
 from signal import SIGINT, SIGTERM, SIGABRT
 
-BASE_DIR = pathlib.Path(__file__).parent
-logging.basicConfig(filename=str(BASE_DIR.joinpath('tbot.log').absolute()), style="{", format="[{asctime}] {threadName}:{levelname} - {message}", datefmt="%Y-%m-%d %H:%M:%S")
-
+import pyyaml
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler
 from telegram.ext.filters import Filters
@@ -63,7 +60,7 @@ def restricted_template(func, *, whitelist):
 class TBot():
     def __init__(self, cfg_path, db_path):
         with open(cfg_path) as f:
-            config = json.load(f)
+            config = pyyaml.safe_load(f)
 
         self.admins = config['admins']
         self.rootdir = config['rootdir']
@@ -75,6 +72,7 @@ class TBot():
         self.jq = self.updater.job_queue
         self.db = BotDB(db_path)
         self.ftp_cfg = config['ftp']
+        self.ftp_cfg.setdefault('root', self.rootdir)
         self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
         self.shares = {}  # (hash, user): timer
 
@@ -690,7 +688,8 @@ class TBot():
 # --------------------------------------------------------------------------------------------------
 
 def main():
-    cfg_path = str(BASE_DIR.joinpath('config.json').absolute())
+    logging.basicConfig(filename=str(BASE_DIR.joinpath('tbot.log').absolute()), style="{", format="[{asctime}] {threadName}:{levelname} - {message}", datefmt="%Y-%m-%d %H:%M:%S")
+    cfg_path = str(BASE_DIR.joinpath('config.yaml').absolute())
     db_path = str(BASE_DIR.joinpath('data.db').absolute())
     bot = TBot(cfg_path, db_path)
 
