@@ -232,34 +232,45 @@ class TBot():
 # torrent management
 # --------------------------------------------------------------------------------------------------
 
-    def show_torrents(self, update, context, torrents, cat, offset=0, message=None):
-        #TODO cache torrent list in chat_data?
-        def build_menu(torrents, offset, n):
-            if not torrents:
-                return None
-            buttons = [InlineKeyboardButton(str(i+1), callback_data=f'hash={t.hashString},{offset},{cat}') for i, t in enumerate(torrents)]
-            cols = [len(torrents)]
-            if len(torrents) > 6:
-                cols = [len(torrents) - len(torrents) // 2, len(torrents) // 2]
-            rows = []
-            col_offset = 0
-            for col_n in cols:
-                rows.append(buttons[col_offset:col_offset + col_n])
-                col_offset += col_n
-            left_btn = InlineKeyboardButton('⬅', callback_data=f'offset={offset - 10},{cat}' if offset > 0 else f'offset=left,{cat}')
-            refresh_btn = InlineKeyboardButton('🔄', callback_data=f'offset={offset},{cat}')
-            right_btn = InlineKeyboardButton('➡', callback_data=f'offset={offset + 10},{cat}' if offset + 10 < n else f'offset=right,{cat}')
-            rows.append([left_btn, refresh_btn, right_btn])
+    def show_torrents(self, update, context, torrents, category, offset=0, message=None):
+        #TODO cache torrent list in chat_data? (WTF?)
+        elements_per_page = 10
+
+        def build_menu(torrents, offset, total_count):
+            step = elements_per_page
+            left_offset = offset - step if offset > 0 else 'left'
+            right_offset = offset + step if offset + step < total_count else 'right'
+            left_btn = InlineKeyboardButton('⬅', callback_data=f'offset={left_offset},{category}')
+            refresh_btn = InlineKeyboardButton('🔄', callback_data=f'offset={offset},{category}')
+            right_btn = InlineKeyboardButton('➡', callback_data=f'offset={right_offset},{category}')
+            navigation_row = [left_btn, refresh_btn, right_btn]
+
+            if not torrents:  # still need update button. Full row is used for consistency
+                return InlineKeyboardMarkup([navigation_row])
+            buttons = [InlineKeyboardButton(str(i+1), callback_data=f'hash={t.hashString},{offset},{category}') for i, t in enumerate(torrents)]
+            if len(torrents) <= 6:
+                rows = [buttons]
+            else:  # too many buttons for a nice single row
+                mid_point = len(torrents) - len(torrents) // 2  # if odd, extra button goes to the 1st row
+                rows = [
+                    buttons[:mid_point],
+                    buttons[mid_point:]
+                ]
+            rows.append(navigation_row)
             return InlineKeyboardMarkup(rows)
 
-        n = len(torrents)
-        torrents = torrents[offset:offset + 10]
+        total_count = len(torrents)
+        if offset >= total_count:  # e.g. last page contained only one torrent and it was deleted
+            # show the current last page instead
+            # max multiple of elements_per_page below total_count
+            offset = (total_count - 1) // elements_per_page * elements_per_page
+        torrents = torrents[offset:offset + elements_per_page]
 
         uid = update.effective_user.id
         ftp = [(t.hashString, uid) in self.shares for t in torrents]
 
-        msg = strings.format_torrents(torrents, offset, n, ftp)
-        markup = build_menu(torrents, offset, n)
+        msg = strings.format_torrents(torrents, offset, total_count, ftp)
+        markup = build_menu(torrents, offset, total_count)
         if message is None:
             self.answer(update, context, msg, reply_markup=markup)
         else:
