@@ -3,10 +3,14 @@ import random
 import threading
 from pathlib import Path
 
-from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
-from pyftpdlib.servers import ThreadedFTPServer
-from pyftpdlib.filesystems import AbstractedFS
+try:
+    from pyftpdlib.authorizers import DummyAuthorizer
+    from pyftpdlib.handlers import FTPHandler
+    from pyftpdlib.servers import ThreadedFTPServer
+    from pyftpdlib.filesystems import AbstractedFS
+    ftp_available = True
+except ImportError:
+    ftp_available = False
 
 
 def rand_password(n):

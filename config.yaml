@@ -18,6 +18,7 @@ client_cfg:  # Options for transmission-rpc client
     password: "some_secure_password"
 
 ftp:
+    enabled: False  # If disabled, all other options are ignored
     address: "192.168.1.10:2100"  # address and port to listen on
     # FTP root. Admins can open access to this directory.
     # If not specified or empty, rootdir will be used.

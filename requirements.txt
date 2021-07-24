@@ -1,5 +1,3 @@
-pyftpdlib
-pysendfile
 python-telegram-bot
 pyyaml
 transmission-rpc >=3.2.4

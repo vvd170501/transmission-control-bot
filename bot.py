@@ -22,7 +22,7 @@ import yaml
 
 import strings
 from db import BotDB
-from ftp import FTPDrop
+from ftp import FTPDrop, ftp_available
 
 valid_dirname = re.compile(r'^[\w. -]+$')
 offset_query = re.compile(r'^offset=(\w+),(\w+)$')
@@ -38,8 +38,8 @@ class State(Enum):
     SELDL = 11
     SELUL = 12
     SELDUR = 13
+    END = ConversationHandler.END
 
-State.END = ConversationHandler.END
 
 def log_error():
     e=traceback.format_exc()
@@ -50,6 +50,7 @@ def speed_format(kbps):
     if kbps < 1000:
         return f'{kbps} KB/s'
     return f'{kbps/1000:.2f} MB/s'
+
 
 def restricted_template(func, *, whitelist):
     @wraps(func)
@@ -76,8 +77,13 @@ class TBot():
         self.jq = self.updater.job_queue
         self.db = BotDB(db_path)
         self.ftp_cfg = config['ftp']
-        self.ftp_cfg['root'] = self.ftp_cfg.get('root') or self.rootdir  # empty or missing root -> rootdit
-        self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
+        self.ftp_enabled = self.ftp_cfg['enabled']
+        if self.ftp_enabled:
+            if not ftp_available:
+                logging.error('pyftpdlib is not installed, cannot enable FTP access. Install it using "pip install pyftpdlib" and restart the bot.')
+                sys.exit(1)
+            self.ftp_cfg['root'] = self.ftp_cfg.get('root') or self.rootdir  # empty or missing root -> rootdir
+            self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
         self.shares = {}  # (hash, user): timer
 
         self.restore_persistent_timer('reset_limit', self.reset_limit)
@@ -126,11 +132,12 @@ class TBot():
         self.handlers['list_offset'] = (CallbackQueryHandler(self.list_offset, pattern=offset_query), 0)
         self.handlers['torrent_info'] = (CallbackQueryHandler(self.torrent_info, pattern=hash_query), 0)
         self.handlers['toggle_torrent'] = (CallbackQueryHandler(self.toggle_torrent, pattern=toggle_query), 0)
-        self.handlers['ftp_access'] = (CallbackQueryHandler(self.ftp_access, pattern=ftp_query), 0)
         self.handlers['del_torrent'] = (CallbackQueryHandler(self.del_torrent, pattern=del_query), 0)
 
-        self.handlers['ftp'] = (CommandHandler('ftp', restricted(self.ftp), filters=Filters.user(user_id=self.admins)), 0)
-        self.handlers['noftp'] = (CommandHandler('noftp', restricted(self.no_ftp), filters=Filters.user(user_id=self.admins)), 0)
+        if self.ftp_enabled:
+            self.handlers['ftp'] = (CommandHandler('ftp', restricted(self.ftp), filters=Filters.user(user_id=self.admins)), 0)
+            self.handlers['noftp'] = (CommandHandler('noftp', restricted(self.no_ftp), filters=Filters.user(user_id=self.admins)), 0)
+            self.handlers['ftp_access'] = (CallbackQueryHandler(self.ftp_access, pattern=ftp_query), 0)
 
         self.handlers['disk'] = (CommandHandler('disk', restricted(self.show_disk_usage)), 0)
         self.handlers['auth']= (MessageHandler(Filters.text & (~Filters.command), self.auth), 1)
@@ -329,7 +336,13 @@ class TBot():
             delete_btn = InlineKeyboardButton('❌ Удалить торрент и скачанные файлы', callback_data=f'del={t_hash},{offset},{owner}')
             back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={offset},{owner}')
             refresh_btn = InlineKeyboardButton('🔄', callback_data=f'hash={t_hash},{offset},{owner}')
-            return InlineKeyboardMarkup([[toggle_btn], [ftp_btn], [delete_btn], [back_btn, refresh_btn]])
+            rows = [
+                [toggle_btn],
+                [ftp_btn] if self.ftp_enabled else [],
+                [delete_btn],
+                [back_btn, refresh_btn]
+            ]
+            return InlineKeyboardMarkup(rows)
 
         torrent = self.client.get_torrent(t_hash)
         msg = strings.format_torrent(torrent, override_status='stopping' if stopping else None, ftp=key in self.shares)
@@ -696,21 +709,21 @@ class TBot():
 # --------------------------------------------------------------------------------------------------
 
 def main():
+    base_dir = pathlib.Path(__file__).parent.absolute()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', metavar='FILE', help='Config file (defaults to "config.yaml")')
-    parser.add_argument('--db', metavar='FILE', help='DB file (defaults to "data.db")')
-    parser.add_argument('--log', metavar='FILE', help='Log file (If not present, write to stderr)')
+    parser.add_argument('--config', metavar='FILE', help=f'Config file (default: {base_dir / "config.yaml"})')
+    parser.add_argument('--db', metavar='FILE', help=f'DB file (default: {base_dir / "data.db"})')
+    parser.add_argument('--log', metavar='FILE', help='Log file (default: write to stderr)')
     args = parser.parse_args()
 
-    BASE_DIR = pathlib.Path(__file__).parent
     logging_cfg = {'style': '{', 'format': '[{asctime}] {threadName}:{levelname} - {message}', 'datefmt': '%Y-%m-%d %H:%M:%S'}
     if args.log:
         logging_cfg['filename'] = args.log
     else:
         logging_cfg['stream'] = sys.stderr
     logging.basicConfig(**logging_cfg)
-    cfg_path = args.config or str(BASE_DIR.joinpath('config.yaml').absolute())
-    db_path = args.db or str(BASE_DIR.joinpath('data.db').absolute())
+    cfg_path = args.config or str(base_dir.joinpath('config.yaml').absolute())
+    db_path = args.db or str(base_dir.joinpath('data.db').absolute())
     bot = TBot(cfg_path, db_path)
 
 
