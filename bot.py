@@ -265,8 +265,11 @@ class TBot():
         total_count = len(torrents)
         if offset >= total_count:  # e.g. last page contained only one torrent and it was deleted
             # show the current last page instead
-            # max multiple of elements_per_page below total_count
-            offset = (total_count - 1) // elements_per_page * elements_per_page
+            if total_count == 0:
+                offset = 0
+            else:
+                # max multiple of elements_per_page below total_count
+                offset = (total_count - 1) // elements_per_page * elements_per_page
         torrents = torrents[offset:offset + elements_per_page]
 
         uid = update.effective_user.id

@@ -4,6 +4,10 @@ import shelve2 as shelve
 class BotDB():
     def __init__(self, path):
         self.db = shelve.open(path)
+        # FIXME need something better
+        self.db.setdefault('torrents', {'active': set(), 'owner': {}, 'owned': {}})
+        self.db.setdefault('whitelist', [])
+
 
     def whitelist_user(self, user):
         self.db['whitelist'].append(user)
