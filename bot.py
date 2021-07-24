@@ -76,7 +76,7 @@ class TBot():
         self.jq = self.updater.job_queue
         self.db = BotDB(db_path)
         self.ftp_cfg = config['ftp']
-        self.ftp_cfg.setdefault('root', self.rootdir)
+        self.ftp_cfg['root'] = self.ftp_cfg.get('root') or self.rootdir  # empty or missing root -> rootdit
         self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
         self.shares = {}  # (hash, user): timer
 
@@ -84,7 +84,8 @@ class TBot():
 
         self.create_dl_checker()
         self.create_db_updater()
-        self.create_disk_checker()
+        if self.reserved_space > 0:
+            self.create_disk_checker()
 
         restricted = partial(restricted_template, whitelist=self.db.whitelist())
 
