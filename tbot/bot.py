@@ -3,7 +3,6 @@
 import argparse
 import logging
 import os
-import pathlib
 import re
 import sys
 import time
@@ -11,6 +10,7 @@ import traceback
 from enum import Enum
 from functools import wraps, partial
 from io import BytesIO
+from pathlib import Path
 from signal import SIGINT, SIGTERM, SIGABRT
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -392,7 +392,7 @@ class TBot():
             if key not in self.shares:  # TODO!! check jq implementation. is a lock required to avoid data races?
                 try:
                     torrent = self.client.get_torrent(t_hash)
-                    root = pathlib.Path(torrent.downloadDir) / pathlib.Path(torrent.files()[0].name).parts[0]
+                    root = Path(torrent.downloadDir) / Path(torrent.files()[0].name).parts[0]
                 except Exception as e:
                     logging.error('FTP access error (cannot find torrent root):' + str(e))
                     self.answer_callback(update, context, strings.ftp_error)
@@ -480,7 +480,7 @@ class TBot():
         def client_add(torr_data):
             try:
                 session = self.client.get_session()
-                torr = self.client.add_torrent(torr_data, download_dir=str(pathlib.Path(session.download_dir).joinpath(dirname).absolute()))
+                torr = self.client.add_torrent(torr_data, download_dir=str(Path(session.download_dir).joinpath(dirname).absolute()))
             except Exception as e:
                 self.answer(update, context, strings.error, reply_markup=ReplyKeyboardRemove())
                 log_error()
@@ -709,10 +709,9 @@ class TBot():
 # --------------------------------------------------------------------------------------------------
 
 def main():
-    base_dir = pathlib.Path(__file__).parent.absolute()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', metavar='FILE', help=f'Config file (default: {base_dir / "config.yaml"})')
-    parser.add_argument('--db', metavar='FILE', help=f'DB file (default: {base_dir / "data.db"})')
+    parser.add_argument('--config', metavar='FILE', help='Config file', required=True)
+    parser.add_argument('--db', metavar='FILE', help='DB file (default: "config_directory/data.db")')
     parser.add_argument('--log', metavar='FILE', help='Log file (default: write to stderr)')
     args = parser.parse_args()
 
@@ -722,9 +721,8 @@ def main():
     else:
         logging_cfg['stream'] = sys.stderr
     logging.basicConfig(**logging_cfg)
-    cfg_path = args.config or str(base_dir.joinpath('config.yaml').absolute())
-    db_path = args.db or str(base_dir.joinpath('data.db').absolute())
-    bot = TBot(cfg_path, db_path)
+    db_path = args.db or str(Path(args.config).parent.joinpath('data.db').absolute())
+    bot = TBot(args.config, db_path)
 
 
 if __name__ == '__main__':
