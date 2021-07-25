@@ -38,20 +38,20 @@ temp_limit = 'Download: {}\nUpload: {}\nОграничения до: {}'
 soon = 'Сброс ограничений...'
 
 #set limit
-select_dl = 'Ограничение скорости загрузки'
+select_download_limit = 'Ограничение скорости загрузки'
 dllist = [('1 MB/s', 1000), ('5 MB/s', 5000), ('10 MB/s', 10000), ('20 MB/s', 20000), ('Неогр. (до ~37 MB/s)', None)]
 dl_buttons = dict(dllist)
-dl_kb = [[e[0] for e in dllist[row_start:row_end]] for (row_start, row_end) in [(0, 2), (2, 4), (4, 5)]]
+download_limit_choices = [[e[0] for e in dllist[row_start:row_end]] for (row_start, row_end) in [(0, 2), (2, 4), (4, 5)]]
 
-select_ul = 'Ограничение скорости раздачи'
+select_upload_limit = 'Ограничение скорости раздачи'
 ullist = [('1 MB/s', 1000), ('2 MB/s', 2000), ('5 MB/s', 5000), ('10 MB/s', 10000), ('Неогр. (до ~37 MB/s)', None)]
 ul_buttons = dict(ullist)
-ul_kb = [[e[0] for e in ullist[row_start:row_end]] for (row_start, row_end) in [(0, 2), (2, 4), (4, 5)]]
+upload_limit_choices = [[e[0] for e in ullist[row_start:row_end]] for (row_start, row_end) in [(0, 2), (2, 4), (4, 5)]]
 
-select_dur = 'Таймер ограничения'
+select_duration = 'Таймер ограничения'
 durlist = [('5 мин.', 300), ('10 мин.', 600), ('15 мин.', 900), ('30 мин.', 1800), ('1 ч.', 3600), ('Навсегда', None)]
 dur_buttons = dict(durlist)
-dur_kb = [[e[0] for e in durlist[i:i+2]] for i in range(0, len(durlist), 2)]
+limit_duration_choices = [[e[0] for e in durlist[i:i + 2]] for i in range(0, len(durlist), 2)]
 
 limit_set = '⚠ Ограничения скорости установлены'
 limit_reset = '⚡ Ограничения скорости сброшеы'
@@ -71,7 +71,7 @@ dirlist = [('🎬 Фильмы', 'Films'), ('📺 Сериалы', 'Series'), ('
 dir_buttons = dict(dirlist)
 dir_kb = [[e[0] for e in dirlist[i:i+2]] for i in range(0, len(dirlist), 2)]
 
-make_dir = 'Введите имя папки (допустимые символы - буквы, цифры, пробел, ".", "-", "_")'
+custom_directory = 'Введите имя папки (допустимые символы - буквы, цифры, пробел, ".", "-", "_")'
 
 #fallbacks
 howtocancel = 'Неизвестная команда. Отправьте /cancel для отмены'

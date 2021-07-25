@@ -2,14 +2,11 @@
 
 import argparse
 import logging
-import os
 import re
 import sys
-import time
 import traceback
 from enum import Enum
-from functools import wraps, partial
-from io import BytesIO
+from functools import wraps
 from pathlib import Path
 from signal import SIGINT, SIGTERM, SIGABRT
 
@@ -19,27 +16,18 @@ from telegram.ext import Updater,\
                          CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler
 from telegram.ext.filters import Filters
 from telegram.error import BadRequest
-from transmission_rpc import Client as Transmission
 import yaml
 
 import strings
-from db import BotDB
-from ftp import FTPDrop, ftp_available
-
-valid_dirname = re.compile(r'^[\w. -]+$')
-offset_query = re.compile(r'^offset=(\w+),(\w+)$')
-hash_query = re.compile(r'^hash=(\w+),(\d+),(\w+)$')
-toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+),(\w+)$')
-ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+),(\w+)$')
-del_query = re.compile(r'^(del2?)=(\w+),(\d+),(\w+)$')
+from driver import Driver
 
 
 class State(Enum):
-    SELDIR = 1
-    MKDIR = 2
-    SELDL = 11
-    SELUL = 12
-    SELDUR = 13
+    SELECT_DOWNLOAD_DIRECTORY = 1
+    CUSTOM_DIRECTORY = 2
+    SELECT_DOWNLOAD_LIMIT = 11
+    SELECT_UPLOAD_LIMIT = 12
+    SELECT_LIMIT_DURATION = 13
     END = ConversationHandler.END
 
 
@@ -58,7 +46,11 @@ def restricted_template(func, *, whitelist):
     @wraps(func)
     def wrapped(update, context, *args, **kwargs):
         user_id = update.effective_user.id
-        if user_id not in whitelist:
+        if callable(whitelist):
+            real_whitelist = whitelist()
+        else:
+            real_whitelist = whitelist
+        if user_id not in real_whitelist:
             return
         return func(update, context, *args, **kwargs)
     return wrapped
@@ -66,124 +58,129 @@ def restricted_template(func, *, whitelist):
 
 # noinspection PyUnusedLocal
 class TBot:
+    class RegExps:
+        valid_dirname = re.compile(r'^[\w. -]+$')
+
+        offset_query = re.compile(r'^offset=(\w+),(\w+)$')  # !! offset->list?
+        torrent_info_query = re.compile(r'^hash=(\w+),(\d+,\w+)$')  # !! hash->item?
+        toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+,\w+)$')
+        ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+,\w+)$')
+        delete_torrent_query = re.compile(r'^(del2?)=(\w+),(\d+,\w+)$')
+
     def __init__(self, cfg_path, db_path):
         with open(cfg_path) as f:
             config = yaml.safe_load(f)
 
         self.admins = config['admins']
-        self.rootdir = config['rootdir']
-        self.reserved_space = config['reserved_space']
         self.password = config['password']
-        self.client = Transmission(**config['client_cfg'])
         self.updater = Updater(
             token=config['token'], use_context=True,
             user_sig_handler=self.signal
         )
         self.bot = self.updater.bot
-        self.dispatcher = self.updater.dispatcher
         self.jq = self.updater.job_queue
-        self.db = BotDB(db_path)
-        self.ftp_cfg = config['ftp']
-        self.ftp_enabled = self.ftp_cfg['enabled']
-        if self.ftp_enabled:
-            if not ftp_available:
-                logging.error('pyftpdlib is not installed, cannot enable FTP access. '
-                              'Install it using "pip install pyftpdlib" and restart the bot.')
-                sys.exit(1)
-            # empty or missing root -> rootdir
-            self.ftp_cfg['root'] = self.ftp_cfg.get('root') or self.rootdir
-            self.ftpd = FTPDrop(self.ftp_cfg['address'].split(':'))
-        self.shares = {}  # (hash, user): timer
+        self.driver = Driver(
+            db_path=db_path,
+            rootdir=config['rootdir'],
+            reserved_space=config['reserved_space'],
+            cient_cfg=config['client_cfg'],
+            ftp_cfg=config['ftp'],
+            jq=self.jq
+        )
 
-        self.restore_persistent_timer('reset_limit', self.reset_limit)
-
-        self.create_dl_checker()
-        self.create_db_updater()
-        if self.reserved_space > 0:
-            self.create_disk_checker()
-
-        restricted = partial(restricted_template, whitelist=self.db.whitelist())
-
-        conv_fallbacks = [
-            CommandHandler('cancel', self.conv_cancel),
-            MessageHandler(Filters.all, self.conv_error)
+        conversation_fallbacks = [
+            CommandHandler('cancel', self.conversation_cancel),
+            MessageHandler(Filters.all, self.conversation_error)
         ]
 
-        self.handlers = {}
-        self.handlers['start'] = (CommandHandler('start', self.start), 0)
-        self.handlers['help'] = (CommandHandler('help', restricted(self.help)), 0)
-        self.handlers['limit'] = (CommandHandler('limit', restricted(self.limit)), 0)
-        self.handlers['setlimit'] = (ConversationHandler(
-            [CommandHandler('setlimit', restricted(self.setlimit))],
-            {
-                State.SELDL:
-                    [MessageHandler(Filters.text(list(strings.dl_buttons.keys())), self.sel_dl)],
-                State.SELUL:
-                    [MessageHandler(Filters.text(list(strings.ul_buttons.keys())), self.sel_ul)],
-                State.SELDUR:
-                    [MessageHandler(Filters.text(list(strings.dur_buttons.keys())), self.sel_dur)]
-            },
-            conv_fallbacks
-        ), 0)
-
-        self.handlers['mytorr'] = (CommandHandler('my_torrents', restricted(self.my_torrents)), 0)
-        self.handlers['alltorr'] = (
-            CommandHandler('all_torrents', restricted(self.all_torrents),
-                           filters=Filters.user(user_id=self.admins)),
-            0
+        self._add_command_handler('start', self.start, restricted=False)
+        # Auth handler. If user is not authenticated, restricted commands will be silently ignored
+        self._add_handler(
+            MessageHandler(Filters.text & (~Filters.command), self.auth),
+            group=1  # if group is 0, may interfere with other handlers. Use dynamic filter instead?
         )
-
-        self.handlers['newtorr'] = (ConversationHandler(
+        self._add_command_handler('help', self.help)
+        self._add_command_handler('disk', self.show_disk_usage)
+        self._add_command_handler('limit', self.limit)
+        self._add_handler(ConversationHandler(
+            [CommandHandler('setlimit', self._make_restricted(self.setlimit))],
+            {
+                State.SELECT_DOWNLOAD_LIMIT: [
+                    MessageHandler(
+                        Filters.text(list(strings.dl_buttons.keys())),
+                        self.select_download_limit
+                    )
+                ],
+                State.SELECT_UPLOAD_LIMIT: [
+                    MessageHandler(
+                        Filters.text(list(strings.ul_buttons.keys())),
+                        self.select_upload_limit
+                    )
+                ],
+                State.SELECT_LIMIT_DURATION: [
+                    MessageHandler(
+                        Filters.text(list(strings.dur_buttons.keys())),
+                        self.select_limit_duration
+                    )
+                ]
+            },
+            conversation_fallbacks
+        ))
+        self._add_command_handler('my_torrents', self.my_torrents)
+        self._add_command_handler('all_torrents', self.all_torrents,
+                                  filters=Filters.user(user_id=self.admins))
+        # Adding new torrents
+        self._add_handler(ConversationHandler(
             [
-                MessageHandler(Filters.document.mime_type('application/x-bittorrent'),
-                               restricted(self.add_torrent)),
-                MessageHandler(Filters.regex(re.compile(r'^magnet:\?', re.I)),
-                               restricted(self.add_magnet))
+                MessageHandler(
+                    Filters.document.mime_type('application/x-bittorrent'),
+                    self._make_restricted(self.add_torrent)
+                ),
+                MessageHandler(
+                    Filters.regex(re.compile(r'^magnet:\?', re.I)),
+                    self._make_restricted(self.add_magnet)
+                ),
             ],
             {
-                State.SELDIR: [MessageHandler(Filters.text(list(strings.dir_buttons.keys())),
-                                              self.sel_dir)],
-                State.MKDIR: [MessageHandler(Filters.text & (~Filters.command), self.make_dir)]
+                State.SELECT_DOWNLOAD_DIRECTORY: [
+                    MessageHandler(
+                        Filters.text(list(strings.dir_buttons.keys())),
+                        self.select_download_directory
+                    )
+                ],
+                State.CUSTOM_DIRECTORY: [
+                    MessageHandler(Filters.text & (~Filters.command), self.custom_directory)
+                ]
             },
-            conv_fallbacks
-        ), 0)
+            conversation_fallbacks
+        ))
+        self._add_inline_button_handler(self.RegExps.offset_query, self.show_list_offset)
+        self._add_inline_button_handler(self.RegExps.torrent_info_query, self.torrent_info)
+        self._add_inline_button_handler(self.RegExps.toggle_query, self.toggle_torrent)
+        self._add_inline_button_handler(self.RegExps.delete_torrent_query, self.delete_torrent)
 
-        self.handlers['list_offset'] = (
-            CallbackQueryHandler(self.list_offset, pattern=offset_query), 0
-        )
-        self.handlers['torrent_info'] = (
-            CallbackQueryHandler(self.torrent_info, pattern=hash_query), 0
-        )
-        self.handlers['toggle_torrent'] = (
-            CallbackQueryHandler(self.toggle_torrent, pattern=toggle_query), 0
-        )
-        self.handlers['del_torrent'] = (
-            CallbackQueryHandler(self.del_torrent, pattern=del_query), 0
-        )
+        if self.driver.ftp_enabled:
+            self._add_command_handler('ftp', self.share_root_ftp,
+                                      filters=Filters.user(user_id=self.admins))
+            self._add_command_handler('noftp', self.unshare_root_ftp,
+                                      filters=Filters.user(user_id=self.admins))
+            self._add_inline_button_handler(self.RegExps.ftp_query, self.torrent_ftp_access)
 
-        if self.ftp_enabled:
-            self.handlers['ftp'] = (CommandHandler('ftp', restricted(self.ftp),
-                                                   filters=Filters.user(user_id=self.admins)), 0)
-            self.handlers['noftp'] = (CommandHandler('noftp', restricted(self.no_ftp),
-                                                     filters=Filters.user(user_id=self.admins)), 0)
-            self.handlers['ftp_access'] = (
-                CallbackQueryHandler(self.ftp_access, pattern=ftp_query), 0
-            )
-
-        self.handlers['disk'] = (CommandHandler('disk', restricted(self.show_disk_usage)), 0)
-        self.handlers['auth'] = (MessageHandler(Filters.text & (~Filters.command), self.auth), 1)
-
-        for h, gr in self.handlers.values():
-            self.dispatcher.add_handler(h, group=gr)
-
+    def run(self):
         self.updater.start_polling()
         self.updater.idle()
 
-    def answer(self, update, msg, **kwargs):
-        self.bot.send_message(chat_id=update.effective_chat.id, text=msg, **kwargs)
-
-    def answer_callback(self, update, msg, **kwargs):
-        self.bot.answer_callback_query(update.callback_query.id, text=msg, **kwargs)
+    def auth(self, update, context):
+        user = update.effective_user.id
+        # text message from a whitelisted user. Move this check to a dynamic filter?
+        if user in self.driver.get_whitelist():
+            return
+        if update.message.text == self.password:
+            self.driver.whitelist_user(user)
+            msg = 'You are now authenticated!'
+        else:
+            msg = 'Incorrect password!'
+        self.answer(update, msg)
 
 # --------------------------------------------------------------------------------------------------
 # oneline commands
@@ -196,94 +193,64 @@ class TBot:
         self.answer(update, strings.help)
 
     def limit(self, update, context):
-        active, descr = self.get_limit_info()
-        self.answer(update, descr)
+        # TODO!!
+        ...
+        self.answer(update, ...)
 
     def show_disk_usage(self, update, context):
-        # disk = [ used | available | root-reserved ]
-        # available = [ reported as available | reserved by us ]
-        used, avail = self.get_disk_stats()
-        avail = max(0, avail - self.reserved_space)
-        self.answer(
-            update,
-            strings.disk_usage.format(
-                strings.format_size(used),
-                strings.format_size(used + avail),
-                used / (used + avail) * 100
-            )
-        )
+        # TODO!!
+        ...
 
-    def auth(self, update, context):
-        user = update.effective_user.id
-        if user in self.db.whitelist():
-            return
-        if update.message.text == self.password:
-            self.db.whitelist_user(user)
-            msg = 'You are now authorized!'
-        else:
-            msg = 'Incorrect password!'
-        self.answer(update, msg)
-
-    def ftp(self, update, context):
+    def share_root_ftp(self, update, context):
         # NOTE on restart all shares are silently deleted
-        creds = self.ftpd.share(self.ftp_cfg['root'], True, 'root')
-        self.shares['root'] = time.time() + self.ftp_cfg['tl']
-        timer_info = time.strftime('%H:%M:%S %Z', time.localtime(self.shares['root']))
-        self.create_timer('stop_ftp_root',
-                          self.stop_ftp,
-                          self.shares['root'], ('root', update.effective_chat.id, None))
+        # TODO!!
+        ...
 
-        self.answer(update, strings.ftp_start.format(*creds, timer_info), parse_mode='markdown')
-
-    def no_ftp(self, update, context):
-        if 'root' not in self.shares:
-            return self.answer(update, strings.ftp_stopped)
-        self.cancel_timer('stop_ftp_root')
-        self.ftpd.unshare('root')
-        del self.shares['root']
-        self.answer(update, strings.ftp_stop)
+    def unshare_root_ftp(self, update, context):
+        # TODO!!
+        ...
 
 # --------------------------------------------------------------------------------------------------
 # setlimit conversation
 # --------------------------------------------------------------------------------------------------
 
     def setlimit(self, update, context):
-        self.answer(update, strings.select_dl,
-                    reply_markup=ReplyKeyboardMarkup(strings.dl_kb, resize_keyboard=True))
-        return State.SELDL
+        self.answer(
+            update,
+            strings.select_download_limit,
+            reply_markup=ReplyKeyboardMarkup(strings.download_limit_choices, resize_keyboard=True)
+        )
+        return State.SELECT_DOWNLOAD_LIMIT
 
-    def sel_dl(self, update, context):
+    def select_download_limit(self, update, context):
         context.chat_data['dl'] = strings.dl_buttons[update.message.text]
-        self.answer(update, strings.select_ul,
-                    reply_markup=ReplyKeyboardMarkup(strings.ul_kb, resize_keyboard=True))
-        return State.SELUL
+        self.answer(
+            update,
+            strings.select_upload_limit,
+            reply_markup=ReplyKeyboardMarkup(strings.upload_limit_choices, resize_keyboard=True)
+        )
+        return State.SELECT_UPLOAD_LIMIT
 
-    def sel_ul(self, update, context):
+    def select_upload_limit(self, update, context):
         context.chat_data['ul'] = strings.ul_buttons[update.message.text]
         if not (context.chat_data['dl'] or context.chat_data['ul']):
-            self.cancel_timer('reset_limit')
-            self.reset_limit_now()
-            self.answer(update, strings.limit_reset, reply_markup=ReplyKeyboardRemove())
-            self.notify_limit_change(update.effective_user.id)
+            # Unset limits
+            # TODO!!
+            ...
             context.chat_data.clear()
             return State.END
         self.answer(
-            update, strings.select_dur,
+            update,
+            strings.select_duration,
             reply_markup=ReplyKeyboardMarkup(
-                strings.dur_kb, one_time_keyboard=True, resize_keyboard=True
+                strings.limit_duration_choices, one_time_keyboard=True, resize_keyboard=True
             )
         )
-        return State.SELDUR
+        return State.SELECT_LIMIT_DURATION
 
-    def sel_dur(self, update, context):
-        params = {}
-        self.set_limit(context.chat_data['dl'], context.chat_data['ul'])
-        self.answer(update, strings.limit_set, reply_markup=ReplyKeyboardRemove())
-        context.chat_data.clear()
-        duration = strings.dur_buttons[update.message.text]
-        self.create_persistent_timer('reset_limit', self.reset_limit,
-                                     time.time() + duration if duration is not None else None)
-        self.notify_limit_change(update.effective_user.id)
+    def select_limit_duration(self, update, context):
+        # TODO!!
+        ...
         return State.END
 
 # --------------------------------------------------------------------------------------------------
@@ -291,24 +258,32 @@ class TBot:
 # --------------------------------------------------------------------------------------------------
 
     def show_torrents(self, update, context, torrents, category, offset=0, message=None):
-        #TODO cache torrent list in chat_data? (WTF?)
+        # TODO cache torrent list in chat_data? (WTF?)
         elements_per_page = 10
 
-        def build_menu(torrents, offset, total_count):
+        def build_menu(torrents, current_offset, total_count):
+            # TODO!! move to kb utils
             step = elements_per_page
-            left_offset = offset - step if offset > 0 else 'left'
-            right_offset = offset + step if offset + step < total_count else 'right'
-            left_btn = InlineKeyboardButton('⬅', callback_data=f'offset={left_offset},{category}')
-            refresh_btn = InlineKeyboardButton('🔄', callback_data=f'offset={offset},{category}')
-            right_btn = InlineKeyboardButton('➡', callback_data=f'offset={right_offset},{category}')
-            navigation_row = [left_btn, refresh_btn, right_btn]
+            left_offset = current_offset - step if current_offset > 0 else 'left'
+            right_offset = current_offset + step if current_offset + step < total_count else 'right'
+            navigation_row = [
+                InlineKeyboardButton(
+                    '⬅', callback_data=f'offset={left_offset},{category}'
+                ),
+                InlineKeyboardButton(
+                    '🔄', callback_data=f'offset={current_offset},{category}'
+                ),
+                InlineKeyboardButton(
+                    '➡', callback_data=f'offset={right_offset},{category}'
+                )
+            ]
 
             if not torrents:  # still need update button. Full row is used for consistency
                 return InlineKeyboardMarkup([navigation_row])
             buttons = [
                 InlineKeyboardButton(
                     str(i+1),
-                    callback_data=f'hash={t.hashString},{offset},{category}'
+                    callback_data=f'hash={t.hashString},{current_offset},{category}'
                 ) for i, t in enumerate(torrents)
             ]
             if len(torrents) <= 6:
@@ -316,10 +291,7 @@ class TBot:
             else:  # too many buttons for a nice single row
                 # if odd, extra button goes to the first row
                 mid_point = len(torrents) - len(torrents) // 2
-                rows = [
-                    buttons[:mid_point],
-                    buttons[mid_point:]
-                ]
+                rows = [buttons[:mid_point], buttons[mid_point:]]
             rows.append(navigation_row)
             return InlineKeyboardMarkup(rows)
 
@@ -333,212 +305,162 @@ class TBot:
                 offset = (total_count - 1) // elements_per_page * elements_per_page
         torrents = torrents[offset:offset + elements_per_page]
 
-        uid = update.effective_user.id
-        ftp = [(t.hashString, uid) in self.shares for t in torrents]
-
-        msg = strings.format_torrents(torrents, offset, total_count, ftp)
+        # TODO!!
+        ftp = ...
+        msg_text = strings.format_torrents(torrents, offset, total_count, ftp)
         markup = build_menu(torrents, offset, total_count)
         if message is None:
-            self.answer(update, msg, reply_markup=markup)
+            self.answer(update, msg_text, reply_markup=markup)
         else:
-            message.edit_text(msg, reply_markup=markup)
+            message.edit_text(msg_text, reply_markup=markup)
 
-    def list_offset(self, update, context):
-        offset, owner = context.match.groups()
+    def show_list_offset(self, update, context):
+        offset, category = context.match.groups()
         if offset == 'left':
             self.answer_callback(update, strings.left)
             return
         if offset == 'right':
             self.answer_callback(update, strings.right)
             return
-        if owner == 'my':
-            uid = update.effective_user.id
-            torrents = self._get_torrents(self.db.owned_torrents(uid))
+        if category == 'my':
+            # TODO!!
+            torrents = ...
         else:
             if update.effective_user.id not in self.admins:
                 logging.warning(
-                    f'Unauthorized access attempt (list_offset, user {update.effective_user.id})'
+                    f'Unauthorized access attempt (show_list_offset, '
+                    f'user {update.effective_user.id})'
                 )
                 return
-            torrents = self._get_torrents(None)
+            # TODO!!
+            torrents = ...
         try:
-            self.show_torrents(update, context, torrents, owner, int(offset),
+            self.show_torrents(update, context, torrents, category, int(offset),
                                message=update.callback_query.message)
-        except BadRequest:
+        except BadRequest:  # Same text
             pass
         update.callback_query.answer()
 
     def my_torrents(self, update, context):
         uid = update.effective_user.id
-        torrents = self._get_torrents(self.db.owned_torrents(uid))
+        # TODO!!
+        torrents = ...
         self.show_torrents(update, context, torrents, 'my')
 
     def all_torrents(self, update, context):
-        torrents = self._get_torrents(None)
+        # TODO!!
+        torrents = ...
         self.show_torrents(update, context, torrents, 'all')
 
-    def _get_torrents(self, ids):
-        if ids is not None and not ids:
-            return []
-        return sorted(
-            self.client.get_torrents(
-                ids=ids,
-                arguments=['id', 'hashString', 'name',
-                           'status', 'progress', 'sizeWhenDone', 'leftUntilDone']
-            ),
-            key=lambda t: (t.name, t.hashString)
-        )
-
-    def _torrent_info(self, update, context, t_hash, offset, owner, stopping=False):
+    def _show_torrent_info(self, update, context, t_hash, list_location, stopping=False):
         user = update.effective_user.id
-        key = (t_hash, user)
 
-        def build_menu(t_hash, offset, owner, active):
+        def build_menu(t_hash, list_location, active):
+            # TODO!! move to kb utils
             action = 'stop' if active else 'run'
             toggle_btn = InlineKeyboardButton('⏸ Остановить' if active else '▶ Запустить',
-                                              callback_data=f'{action}={t_hash},{offset},{owner}')
+                                              callback_data=f'{action}={t_hash},{list_location}')
             ftp_btn = InlineKeyboardButton('📁 Настройки FTP-доступа',
-                                           callback_data=f'ftp={t_hash},{offset},{owner}')
+                                           callback_data=f'ftp={t_hash},{list_location}')
+            # TODO add move button
             delete_btn = InlineKeyboardButton('❌ Удалить торрент и скачанные файлы',
-                                              callback_data=f'del={t_hash},{offset},{owner}')
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={offset},{owner}')
+                                              callback_data=f'del={t_hash},{list_location}')
+            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={list_location}')
             refresh_btn = InlineKeyboardButton('🔄',
-                                               callback_data=f'hash={t_hash},{offset},{owner}')
+                                               callback_data=f'hash={t_hash},{list_location}')
             rows = [
                 [toggle_btn],
-                [ftp_btn] if self.ftp_enabled else [],
+                [ftp_btn] if self.driver.ftp_enabled else [],
                 [delete_btn],
                 [back_btn, refresh_btn]
             ]
             return InlineKeyboardMarkup(rows)
 
-        torrent = self.client.get_torrent(t_hash)
-        msg = strings.format_torrent(torrent, override_status='stopping' if stopping else None,
-                                     ftp=key in self.shares)
-        try:
-            update.callback_query.message.edit_text(
-                msg,
-                reply_markup=build_menu(
-                    t_hash, offset, owner, torrent.status != 'stopped' and not stopping
-                )
-            )
-        except BadRequest:
-            pass  # old text
-        update.callback_query.answer()
-
+        # TODO!!
+        ...
 
     def torrent_info(self, update, context):
-        t_hash, offset, owner = context.match.groups()
-        self._torrent_info(update, context, t_hash, offset, owner)
-
-    def toggle_torrent(self, update, context):
-        action, t_hash, offset, owner = context.match.groups()
-        if action == 'run':
-            self.client.start_torrent(t_hash)
-        else:
-            self.client.stop_torrent(t_hash)
-        self._torrent_info(update, context, t_hash, offset, owner, action != 'run')
+        t_hash, list_location = context.match.groups()  # TODO!! hash -> id/key
+        self._show_torrent_info(update, context, t_hash, list_location)
         update.callback_query.answer()
 
-    def ftp_access(self, update, context):
+    def toggle_torrent(self, update, context):
+        action, t_hash, list_location = context.match.groups()
+        if action == 'run':
+            # TODO!!
+            ...
+        else:
+            # TODO!!
+            ...
+        self._show_torrent_info(update, context, t_hash, list_location, action != 'run')
+        update.callback_query.answer()
+
+    def torrent_ftp_access(self, update, context):
         # TODO allow filtered access to categories
         # TODO select tl (manually / based on size? 1h/18GB(5MBps))
-        action, t_hash, offset, owner = context.match.groups()
-        user = update.effective_user.id
-        key = (t_hash, user)
+        action, t_hash, list_location = context.match.groups()
 
-        def build_menu(t_hash, offset, owner, shared):
+        def build_menu(t_hash, list_location, is_shared):
+            # TODO!! move to kb utils
             start_btn = InlineKeyboardButton(
-                '▶ Открыть доступ' if not shared else '🔄 Продлить доступ',
-                callback_data=f'+ftp={t_hash},{offset},{owner}'
+                '▶ Открыть доступ' if not is_shared else '🔄 Продлить доступ',
+                callback_data=f'+ftp={t_hash},{list_location}'
             )
             stop_btn = InlineKeyboardButton(
                 '⏹️ Остановить доступ',
-                callback_data=f'-ftp={t_hash},{offset},{owner}'
+                callback_data=f'-ftp={t_hash},{list_location}'
             )
             back_btn = InlineKeyboardButton(
                 '↩ Назад',
-                callback_data=f'hash={t_hash},{offset},{owner}'
+                callback_data=f'hash={t_hash},{list_location}'
             )
             return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
 
-        details = None
         if action == '-':
-            if key in self.shares:
-                self.cancel_timer(f'stop_ftp_{key}')
-                self.ftpd.unshare(key)
-                del self.shares[key]
+            # TODO!!
+            ...
+            self._show_torrent_info(update, context, t_hash, list_location)
+            # NOTE was before _show_torrent_info. check order
             self.answer_callback(update, strings.ftp_stop_access)
-            self._torrent_info(update, context, t_hash, offset, owner)
             return
-        elif action == '+':
-            # TODO!! check jq implementation. is a lock required to avoid data races?
-            if key not in self.shares:
-                try:
-                    torrent = self.client.get_torrent(t_hash)
-                    root = Path(torrent.downloadDir) / Path(torrent.files()[0].name).parts[0]
-                except Exception as e:
-                    logging.error('FTP access error (cannot find torrent root):' + str(e))
-                    self.answer_callback(update, strings.ftp_error)
-                    return
-
-                if torrent.left_until_done > 0:  # allow sharing if incomplete_dir is not used?
-                    self.answer_callback(update, strings.ftp_incomplete)
-                    return
-                creds = self.ftpd.share(root, False, key)
-            else:
-                creds = self.ftpd.get_creds(key)
-            if creds is None:
-                logging.error('FTP access error (no credentials found)')
-                self.answer_callback(update, strings.ftp_error)
-                return
-
-            timer = time.time() + self.ftp_cfg['tl']
-            if key not in self.shares:
-                self.create_timer(f'stop_ftp_{key}',
-                                  self.stop_ftp,
-                                  timer, (key, update.effective_chat.id, torrent.name))
-            else:
-                self.reschedule_timer(f'stop_ftp_{key}', timer)
-            self.shares[key] = timer
-            details = (*creds, timer)
-
+        # (optionally open FTP access and) show status
+        if action == '+':
+            # TODO!!
+            ...
         else:
-            creds = self.ftpd.get_creds(key)
-            timer = self.shares.get(key)
-            if creds is not None and timer is not None:
-                details = (*creds, timer)
-
-        msg = strings.format_ftp(self.ftp_cfg['address'], details)
-
+            # TODO!!
+            ...
+        msg_text = ...
         try:
             update.callback_query.message.edit_text(
-                msg,
-                reply_markup=build_menu(t_hash, offset, owner, key in self.shares),
+                msg_text,
+                reply_markup=build_menu(t_hash, list_location, ...),  # !!
                 parse_mode='markdown'
             )
         except BadRequest:
             pass
         update.callback_query.answer()
 
-    def del_torrent(self, update, context):
-        action, t_hash, offset, owner = context.match.groups()
+    def delete_torrent(self, update, context):
+        action, t_hash, list_location = context.match.groups()
         if action == 'del2':
-            # FTP access may still be open, eventually it will be closed (will just return error to clients)
-            self.client.remove_torrent(t_hash, delete_data=True)
-            self.db.remove_torrent(t_hash)
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={offset},{owner}')
+            # TODO!!
+            ...
+            # !! move button text to strings / button to kb utils
+            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={list_location}')
             update.callback_query.message.edit_text(strings.deleted,
                                                     reply_markup=InlineKeyboardMarkup([[back_btn]]))
         else:
-            torrent = self.client.get_torrent(t_hash, arguments=['id', 'hashString', 'name'])
+            # TODO!!
+            ...
+            # !! move button text to strings / markup to kb utils
             cancel_btn = InlineKeyboardButton('🚫 Отмена',
-                                              callback_data=f'hash={t_hash},{offset},{owner}')
-            ok_btn = InlineKeyboardButton('❌ Удалить',
-                                          callback_data=f'del2={t_hash},{offset},{owner}')
+                                              callback_data=f'hash={t_hash},{list_location}')
+            confirmation_btn = InlineKeyboardButton('❌ Удалить',
+                                          callback_data=f'del2={t_hash},{list_location}')
             update.callback_query.message.edit_text(
-                strings.del_confirm.format(torrent.name),
-                reply_markup=InlineKeyboardMarkup([[cancel_btn, ok_btn]])
+                strings.del_confirm.format(...),  # !!
+                reply_markup=InlineKeyboardMarkup([[cancel_btn, confirmation_btn]])
             )
         update.callback_query.answer()
 
@@ -546,8 +468,7 @@ class TBot:
 # new torrent conversation
 # --------------------------------------------------------------------------------------------------
 
-    def add_torrent(self, update, context):
-        context.chat_data['torrent'] = update.message.document
+    def _goto_directory_selection(self, update):
         self.answer(
             update, strings.select_dir,
             reply_markup=ReplyKeyboardMarkup(
@@ -556,278 +477,71 @@ class TBot:
                 resize_keyboard=True
             )
         )
-        return State.SELDIR
+        return State.SELECT_DOWNLOAD_DIRECTORY
+
+    def add_torrent(self, update, context):
+        context.chat_data['torrent'] = update.message.document
+        return self._goto_directory_selection(update)
 
     def add_magnet(self, update, context):
         context.chat_data['magnet'] = update.message.text
-        self.answer(
-            update,
-            strings.select_dir,
-            reply_markup=ReplyKeyboardMarkup(
-                strings.dir_kb,
-                one_time_keyboard=True,
-                resize_keyboard=True
-            )
-        )
-        return State.SELDIR
+        return self._goto_directory_selection(update)
 
-    def sel_dir(self, update, context):
+    def select_download_directory(self, update, context):
         if not strings.dir_buttons[update.message.text]:
-            self.answer(update, strings.make_dir, reply_markup=ReplyKeyboardRemove())
-            return State.MKDIR
-        self._add_torrent(strings.dir_buttons[update.message.text], context, update)
+            self.answer(update, strings.custom_directory, reply_markup=ReplyKeyboardRemove())
+            return State.CUSTOM_DIRECTORY
+        # TODO!!
+        ...
         return State.END
 
-    def make_dir(self, update, context):
+    def custom_directory(self, update, context):
         dirname = update.message.text
-        if valid_dirname.match(dirname) and dirname not in ['.', '..']:
-            self._add_torrent(dirname, context, update)
-        else:
-            self.answer(update, strings.invalid_dirname)
-            return State.MKDIR
-        return State.END
-
-    def _add_torrent(self, dirname, context, update):
-        def client_add(torr_data):
-            try:
-                session = self.client.get_session()
-                torr = self.client.add_torrent(
-                    torr_data,
-                    download_dir=str(Path(session.download_dir).joinpath(dirname).absolute())
-                )
-            except Exception as e:
-                self.answer(update, strings.error, reply_markup=ReplyKeyboardRemove())
-                log_error()
-                return
-
-            try:
-                t_hash = torr.hashString
-            except AttributeError:
-                logging.error(f'Transmission did not return hash for {torr!r}')
-                self.client.remove_torrent(torr.id, delete_data=True)
-                self.answer(update, strings.nohash, reply_markup=ReplyKeyboardRemove())
-                return
-
-            uid = update.effective_user.id
-            if self.db.has_torrent(t_hash):
-                self.answer(update, strings.duplicate, reply_markup=ReplyKeyboardRemove())
-                return
-            self.db.add_torrent(t_hash, uid, active=True)
-            self.answer(update, strings.added, reply_markup=ReplyKeyboardRemove())
-
-        if context.chat_data.get('torrent'):
-            try:
-                tfile = context.chat_data['torrent'].get_file()
-                with BytesIO() as buf:
-                    tfile.download(out=buf)
-                    buf.seek(0)
-                    client_add(buf)
-            except Exception as e:
-                self.answer(update, strings.error_load_file, reply_markup=ReplyKeyboardRemove())
-                log_error()
-            del context.chat_data['torrent']
-        else:
-            client_add(context.chat_data['magnet'])
-            del context.chat_data['magnet']
+        if self.RegExps.valid_dirname.match(dirname) and dirname not in ['.', '..']:
+            # TODO!!
+            ...
+            return State.END
+        self.answer(update, strings.invalid_dirname)
+        return State.CUSTOM_DIRECTORY
 
 # --------------------------------------------------------------------------------------------------
 # conversation fallbacks
 # --------------------------------------------------------------------------------------------------
 
-    def conv_cancel(self, update, context):
+    def conversation_cancel(self, update, context):
         context.chat_data.clear()
         self.answer(update, strings.cancelled, reply_markup=ReplyKeyboardRemove())
         return State.END
 
-    def conv_error(self, update, context):
+    def conversation_error(self, update, context):
         self.answer(update, strings.howtocancel)
-
-# --------------------------------------------------------------------------------------------------
-# jobs
-# --------------------------------------------------------------------------------------------------
-
-    def create_persistent_timer(self, name, callback, timer):
-        self.db.set_timer(name, timer)
-        self.create_timer(name, callback, timer)
-
-    def restore_persistent_timer(self, name, callback):
-        timer = self.db.get_timer(name)
-        self.create_timer(name, callback, timer)
-
-    def create_timer(self, name, callback, timer, context=None):
-        self.cancel_timer(name)  # timer is None -> cancel only
-        if timer is None:
-            return
-        dt = timer - time.time()
-        if dt <= 0:
-            callback(context)
-        else:
-            self.jq.run_once(callback, dt, context=context, name=name)
-
-    def cancel_timer(self, name):
-        for job in self.jq.get_jobs_by_name(name):
-            job.schedule_removal()
-
-    def reschedule_timer(self, name, timer):
-        for job in self.jq.get_jobs_by_name(name):
-            callback = job.callback
-            context = job.context
-            job.schedule_removal()
-            self.create_timer(name, callback, timer, context)
-
-    def create_dl_checker(self): #TODO is db threadsafe? add lock/etc
-        self.jq.run_repeating(self.check_downloads, 60, first=5)
-
-    def create_disk_checker(self):
-        self.jq.run_repeating(self.check_disk, 60 * 10, first=75)
-
-    def create_db_updater(self): #TODO is db threadsafe? add lock/etc
-        self.jq.run_repeating(self.update_db, 60 * 15, first=30)
-
-# --------------------------------------------------------------------------------------------------
-# job callbacks
-# --------------------------------------------------------------------------------------------------
-
-    def stop_ftp(self, context):
-        key, user, torrent = context.job.context
-        if key not in self.shares:  # WTF??
-            return
-        del self.shares[key]
-        if self.ftpd.active():
-            self.ftpd.unshare(key)
-        msg = strings.ftp_stop if torrent is None else strings.ftp_unshare.format(torrent)
-        self.updater.bot.send_message(chat_id=user, text=msg, disable_notification=True)
-
-    def reset_limit_now(self):
-        self.set_limit(None, None)
-        self.db.set_timer('reset_limit', None)
-
-    def reset_limit(self, context):
-        self.reset_limit_now()
-        self.notify_limit_change()
-
-    def process_finished(self, torrents):
-        for t_hash, t_name in torrents:
-            owner = self.db.get_owner(t_hash)
-            if owner is not None:
-                self.notify_download_finished(owner, t_name)
-        self.db.mark_finished([t[0] for t in torrents])
-
-
-    def check_downloads(self, context):
-        active = self.db.get_active()
-        if not active:
-            return
-        finished = [
-            (t.hashString, t.name)
-            for t in self.client.get_torrents(
-                ids=list(active),
-                arguments=['id', 'hashString', 'name', 'status', 'leftUntilDone']
-            )  # id is used by client
-            if t.status in ['seeding', 'stopped'] and t.leftUntilDone == 0
-        ]
-        if finished:
-            self.process_finished(finished)
-
-    def check_disk(self, context):
-        used, avail = self.get_disk_stats()
-        if avail <= self.reserved_space and not self.db.disk_full():
-            # TODO thread-safety for client and db?
-            self.update_db(context)  # may be executed concurrently with db updater?
-            active = self.db.get_active()
-            if active:
-                self.client.stop_torrent(ids=list(active))
-                self.db.mark_finished(list(self.db.get_active()))
-            self.notify_disk_full(True)
-            self.db.set_disk_full(True)
-        if avail > self.reserved_space and self.db.disk_full():
-            self.notify_disk_full(False)
-            self.db.set_disk_full(False)
-
-    def update_db(self, context):
-        torrents = self.client.get_torrents(
-            arguments=['id', 'hashString', 'name', 'status', 'leftUntilDone']
-        )
-        active = self.db.get_active()
-        finished = [
-            (t.hashString, t.name) for t in torrents
-            if (t.status in ['seeding', 'stopped'] and
-                t.leftUntilDone == 0 and t.hashString in active)
-        ]
-        if finished:
-            self.process_finished(finished)
-        self.db.update_torrents(
-            [
-                (t.hashString, t.status not in ['seeding', 'stopped'] or t.leftUntilDone > 0)
-                for t in torrents
-            ]
-        )
-
-# --------------------------------------------------------------------------------------------------
-# notifications
-# --------------------------------------------------------------------------------------------------
-
-    def notify_limit_change(self, origin=None):
-        # TODO async? is session threadsafe?
-        # NOTE is spam limit an issue?
-        active, descr = self.get_limit_info()
-        if active:
-            msg = strings.notif_limit_set + descr
-        else:
-            msg = strings.notif_limit_reset
-        for user in self.db.whitelist():
-            if user != origin:
-                self.updater.bot.send_message(chat_id=user, text=msg, disable_notification=True)
-
-    def notify_download_finished(self, user, title):
-        self.updater.bot.send_message(chat_id=user, text=strings.finished.format(title))
-
-    def notify_disk_full(self, full):
-        # TODO async?
-        # NOTE is spam limit an issue?
-        msg = strings.disk_full if full else strings.disk_ok
-        for user in self.db.whitelist():
-            self.updater.bot.send_message(chat_id=user, text=msg)
 
 # --------------------------------------------------------------------------------------------------
 # utils
 # --------------------------------------------------------------------------------------------------
 
-    def get_limit_info(self):
-        session = self.client.get_session()
-        if session.speed_limit_down_enabled:
-            dl_limit = speed_format(session.speed_limit_down)
-        else:
-            dl_limit = '-'
-        if session.speed_limit_up_enabled:
-            ul_limit = speed_format(session.speed_limit_up)
-        else:
-            ul_limit = '-'
-        timer = self.db.get_timer('reset_limit')
-        if dl_limit == ul_limit == '-' or timer is None:
-            return not dl_limit == ul_limit == '-', strings.perm_limit.format(dl_limit, ul_limit)
-        else:
-            timer_end = (time.strftime('%H:%M:%S %Z', time.localtime(timer)) if timer > time.time()
-                         else strings.soon)
-            return True, strings.temp_limit.format(dl_limit, ul_limit, timer_end)
+    def _make_restricted(self, function):
+        return restricted_template(function, whitelist=self.driver.get_whitelist)
 
-    def set_limit(self, dl, ul):
-        params = {
-            'speed_limit_down_enabled': dl is not None,
-            'speed_limit_up_enabled': ul is not None
-        }
-        if dl is not None:
-            params['speed_limit_down'] = dl
-        if ul is not None:
-            params['speed_limit_up'] = ul
-        self.client.set_session(**params)
+    def _add_handler(self, handler, group=0):
+        # A shortcut for adding handlers
+        self.updater.dispatcher.add_handler(handler, group=group)
 
-    def get_disk_stats(self):
-        # use self.client.free_space(...)?
-        stats = os.statvfs(self.rootdir)
-        used = (stats.f_blocks - stats.f_bfree) * stats.f_bsize
-        avail = stats.f_bavail * stats.f_bsize
-        return used, avail
+    def _add_command_handler(self, command, callback, restricted=True, **kwargs):
+        if restricted:
+            callback = self._make_restricted(callback)
+        self._add_handler(CommandHandler(command, callback, **kwargs))
+
+    def _add_inline_button_handler(self, pattern, callback):
+        # Handlers are restricted, just in case.
+        # Is it possible for a client to send a callback query without pressing any actual buttons?
+        self._add_handler(CallbackQueryHandler(self._make_restricted(callback), pattern=pattern))
+
+    def answer(self, update, msg, **kwargs):
+        self.bot.send_message(chat_id=update.effective_chat.id, text=msg, **kwargs)
+
+    def answer_callback(self, update, msg, **kwargs):
+        self.bot.answer_callback_query(update.callback_query.id, text=msg, **kwargs)
 
     def signal(self, signum, frame):
         if signum not in [SIGINT, SIGTERM, SIGABRT]:
@@ -860,6 +574,7 @@ def main():
     logging.basicConfig(**logging_cfg)
     db_path = args.db or str(Path(args.config).parent.joinpath('data.db').absolute())
     bot = TBot(args.config, db_path)
+    bot.run()
 
 
 if __name__ == '__main__':
