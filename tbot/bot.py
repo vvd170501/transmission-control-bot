@@ -61,8 +61,10 @@ class TBot:
     class RegExps:
         valid_dirname = re.compile(r'^[\w. -]+$')
 
-        offset_query = re.compile(r'^offset=(\w+),(\w+)$')  # !! offset->list?
-        torrent_info_query = re.compile(r'^hash=(\w+),(\d+,\w+)$')  # !! hash->item?
+        # !! move to kb utils? store action names in separate vars?
+        # "offset" and "hash" actions were used in previous versions
+        show_list_query = re.compile(r'^(?:list|offset)=(\w+),(\w+)$')
+        torrent_info_query = re.compile(r'^(?:item|hash)=(\w+),(\d+,\w+)$')
         toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+,\w+)$')
         ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+,\w+)$')
         delete_torrent_query = re.compile(r'^(del2?)=(\w+),(\d+,\w+)$')
@@ -78,14 +80,13 @@ class TBot:
             user_sig_handler=self.signal
         )
         self.bot = self.updater.bot
-        self.jq = self.updater.job_queue
         self.driver = Driver(
             db_path=db_path,
             rootdir=config['rootdir'],
             reserved_space=config['reserved_space'],
-            cient_cfg=config['client_cfg'],
+            client_cfg=config['client_cfg'],
             ftp_cfg=config['ftp'],
-            jq=self.jq
+            job_queue=self.updater.job_queue
         )
 
         conversation_fallbacks = [
@@ -154,7 +155,7 @@ class TBot:
             },
             conversation_fallbacks
         ))
-        self._add_inline_button_handler(self.RegExps.offset_query, self.show_list_offset)
+        self._add_inline_button_handler(self.RegExps.show_list_query, self.show_list_offset)
         self._add_inline_button_handler(self.RegExps.torrent_info_query, self.torrent_info)
         self._add_inline_button_handler(self.RegExps.toggle_query, self.toggle_torrent)
         self._add_inline_button_handler(self.RegExps.delete_torrent_query, self.delete_torrent)
@@ -193,22 +194,16 @@ class TBot:
         self.answer(update, strings.help)
 
     def limit(self, update, context):
-        # TODO!!
-        ...
-        self.answer(update, ...)
+        self.answer(update, self.driver.get_speed_limits())
 
     def show_disk_usage(self, update, context):
-        # TODO!!
-        ...
+        self.answer(update, self.driver.get_disk_usage())
 
     def share_root_ftp(self, update, context):
-        # NOTE on restart all shares are silently deleted
-        # TODO!!
-        ...
+        self.answer(update, self.driver.share_root_ftp())
 
     def unshare_root_ftp(self, update, context):
-        # TODO!!
-        ...
+        self.answer(update, self.driver.unshare_root_ftp())
 
 # --------------------------------------------------------------------------------------------------
 # setlimit conversation
@@ -268,13 +263,13 @@ class TBot:
             right_offset = current_offset + step if current_offset + step < total_count else 'right'
             navigation_row = [
                 InlineKeyboardButton(
-                    '⬅', callback_data=f'offset={left_offset},{category}'
+                    '⬅', callback_data=f'list={left_offset},{category}'
                 ),
                 InlineKeyboardButton(
-                    '🔄', callback_data=f'offset={current_offset},{category}'
+                    '🔄', callback_data=f'list={current_offset},{category}'
                 ),
                 InlineKeyboardButton(
-                    '➡', callback_data=f'offset={right_offset},{category}'
+                    '➡', callback_data=f'list={right_offset},{category}'
                 )
             ]
 
@@ -283,7 +278,7 @@ class TBot:
             buttons = [
                 InlineKeyboardButton(
                     str(i+1),
-                    callback_data=f'hash={t.hashString},{current_offset},{category}'
+                    callback_data=f'item={t.hashString},{current_offset},{category}'
                 ) for i, t in enumerate(torrents)
             ]
             if len(torrents) <= 6:
@@ -365,9 +360,9 @@ class TBot:
             # TODO add move button
             delete_btn = InlineKeyboardButton('❌ Удалить торрент и скачанные файлы',
                                               callback_data=f'del={t_hash},{list_location}')
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={list_location}')
+            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'list={list_location}')
             refresh_btn = InlineKeyboardButton('🔄',
-                                               callback_data=f'hash={t_hash},{list_location}')
+                                               callback_data=f'item={t_hash},{list_location}')
             rows = [
                 [toggle_btn],
                 [ftp_btn] if self.driver.ftp_enabled else [],
@@ -412,7 +407,7 @@ class TBot:
             )
             back_btn = InlineKeyboardButton(
                 '↩ Назад',
-                callback_data=f'hash={t_hash},{list_location}'
+                callback_data=f'item={t_hash},{list_location}'
             )
             return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
 
@@ -447,7 +442,7 @@ class TBot:
             # TODO!!
             ...
             # !! move button text to strings / button to kb utils
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'offset={list_location}')
+            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'list={list_location}')
             update.callback_query.message.edit_text(strings.deleted,
                                                     reply_markup=InlineKeyboardMarkup([[back_btn]]))
         else:
@@ -455,7 +450,7 @@ class TBot:
             ...
             # !! move button text to strings / markup to kb utils
             cancel_btn = InlineKeyboardButton('🚫 Отмена',
-                                              callback_data=f'hash={t_hash},{list_location}')
+                                              callback_data=f'item={t_hash},{list_location}')
             confirmation_btn = InlineKeyboardButton('❌ Удалить',
                                           callback_data=f'del2={t_hash},{list_location}')
             update.callback_query.message.edit_text(
