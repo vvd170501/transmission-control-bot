@@ -1,5 +1,9 @@
 import re
 
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+from strings import Buttons
+
 
 class QPMeta(type):
     def __call__(cls, action_names, **part_patterns):
@@ -69,3 +73,42 @@ class CallbackQueryPatterns:
         CallbackQueryActions.delete_torrent,
         CallbackQueryActions.confirm_deletion
     ])
+
+
+class ListNavigationKeyboard(InlineKeyboardMarkup):
+    LEFT = 'left'
+    RIGHT = 'right'
+    @classmethod
+    def build_menu(cls, items, elements_per_page, current_offset, total_count, list_category):
+        step = elements_per_page
+        left_offset = current_offset - step if current_offset > 0 else cls.LEFT
+        right_offset = current_offset + step if current_offset + step < total_count else cls.RIGHT
+        navigation_row = [
+            InlineKeyboardButton(
+                Buttons.left,
+                callback_data=f'{CallbackQueryActions.show_list_part}={left_offset},{list_category}'
+            ),
+            InlineKeyboardButton(
+                Buttons.refresh, callback_data=f'list={current_offset},{category}'
+            ),
+            InlineKeyboardButton(
+                Buttons.right, callback_data=f'list={right_offset},{category}'
+            )
+        ]
+
+        if not torrents:  # still need update button. Full row is used for consistency
+            return InlineKeyboardMarkup([navigation_row])
+        buttons = [
+            InlineKeyboardButton(
+                str(i + 1),
+                callback_data=f'item={t.hashString},{current_offset},{category}'
+            ) for i, t in enumerate(torrents)
+        ]
+        if len(torrents) <= 6:
+            rows = [buttons]
+        else:  # too many buttons for a nice single row
+            # if odd, extra button goes to the first row
+            mid_point = len(torrents) - len(torrents) // 2
+            rows = [buttons[:mid_point], buttons[mid_point:]]
+        rows.append(navigation_row)
+        return InlineKeyboardMarkup(rows)

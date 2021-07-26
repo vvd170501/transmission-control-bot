@@ -65,7 +65,6 @@ class TBot:
         with open(cfg_path) as f:
             config = yaml.safe_load(f)
 
-        self.admins = config['admins']
         self.password = config['password']
         self.updater = Updater(
             token=config['token'], use_context=True,
@@ -127,8 +126,6 @@ class TBot:
         ))
         self._add_command_handler('my_torrents', self.my_torrents)
         self._add_command_handler('shared_torrents', self.shared_torrents)
-        self._add_command_handler('all_torrents', self.all_torrents,
-                                  filters=Filters.user(user_id=self.admins))
         # Adding new torrents
         self._add_handler(ConversationHandler(
             [
@@ -175,10 +172,8 @@ class TBot:
         )
 
         if self.driver.ftp_enabled:
-            self._add_command_handler('ftp', self.share_root_ftp,
-                                      filters=Filters.user(user_id=self.admins))
-            self._add_command_handler('noftp', self.unshare_root_ftp,
-                                      filters=Filters.user(user_id=self.admins))
+            self._add_command_handler('ftp', self.share_root_ftp)
+            self._add_command_handler('noftp', self.unshare_root_ftp)
             self._add_inline_button_handler(
                 kb.CallbackQueryPatterns.ftp_control, self.torrent_ftp_access
             )
@@ -207,7 +202,7 @@ class TBot:
         self.answer(update, 'Input password to continue!')
 
     def help(self, update, context):
-        self.answer(update, strings.help)
+        self.answer(update, strings.help(self.driver.ftp_enabled))
 
     def limit(self, update, context):
         self.answer(update, self.driver.get_speed_limits())
@@ -283,40 +278,6 @@ class TBot:
     def show_torrents(self, update, context, torrents, category, offset=0, message=None):
         # TODO cache torrent list in chat_data? (WTF?)
         elements_per_page = 10
-
-        def build_menu(torrents, current_offset, total_count):
-            # TODO!! move to kb utils
-            step = elements_per_page
-            left_offset = current_offset - step if current_offset > 0 else 'left'
-            right_offset = current_offset + step if current_offset + step < total_count else 'right'
-            navigation_row = [
-                InlineKeyboardButton(
-                    '⬅', callback_data=f'list={left_offset},{category}'
-                ),
-                InlineKeyboardButton(
-                    '🔄', callback_data=f'list={current_offset},{category}'
-                ),
-                InlineKeyboardButton(
-                    '➡', callback_data=f'list={right_offset},{category}'
-                )
-            ]
-
-            if not torrents:  # still need update button. Full row is used for consistency
-                return InlineKeyboardMarkup([navigation_row])
-            buttons = [
-                InlineKeyboardButton(
-                    str(i+1),
-                    callback_data=f'item={t.hashString},{current_offset},{category}'
-                ) for i, t in enumerate(torrents)
-            ]
-            if len(torrents) <= 6:
-                rows = [buttons]
-            else:  # too many buttons for a nice single row
-                # if odd, extra button goes to the first row
-                mid_point = len(torrents) - len(torrents) // 2
-                rows = [buttons[:mid_point], buttons[mid_point:]]
-            rows.append(navigation_row)
-            return InlineKeyboardMarkup(rows)
 
         total_count = len(torrents)
         if offset >= total_count:  # e.g. last page contained only one torrent and it was deleted

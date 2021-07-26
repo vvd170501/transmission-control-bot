@@ -1,7 +1,5 @@
 token: "123456:xxxxxxx"  # Telegram token for the bot
 password: "bot_password"  # A password to authenticate new users
-# A list of user IDs (may be empty). Admins can use "/all_torrents" command and open FTP access to the root directory
-admins: [123, 456]
 
 # Root directory for downloads (should be configured for transmission manually)
 # Currently used only to check free space
@@ -20,8 +18,5 @@ client_cfg:  # Options for transmission-rpc client
 ftp:
     enabled: False  # If disabled, all other options are ignored
     address: "192.168.1.10:2100"  # address and port to listen on
-    # FTP root. Admins can open access to this directory.
-    # If not specified or empty, rootdir will be used.
-    root: "/mnt/data"
     # Time limit in seconds. After this period opened FTP shares will be automatically closed
     tl: 3600
