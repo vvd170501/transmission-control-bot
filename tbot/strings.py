@@ -172,3 +172,6 @@ class Buttons:
     ftp_share = '▶ Открыть доступ'
     ftp_renew = '🔄 Продлить доступ'
     ftp_unshare = '⏹️ Остановить доступ'
+
+    delete = '❌ Удалить'
+    cancel = '🚫 Отмена'

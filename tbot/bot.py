@@ -399,25 +399,20 @@ class TBot:
         ...
 
     def delete_torrent(self, update, context):
-        action, t_hash, list_location = context.match.groups()
-        if action == 'del2':
+        action, item_id, list_location = context.match.groups()
+        if action == kb.CallbackQueryActions.confirm_deletion:
             # TODO!!
             ...
-            # !! move button text to strings / button to kb utils
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'list={list_location}')
-            update.callback_query.message.edit_text(strings.deleted,
-                                                    reply_markup=InlineKeyboardMarkup([[back_btn]]))
+            update.callback_query.message.edit_text(
+                strings.deleted,
+                reply_markup=kb.ReturnToListKeyboard(list_location).build()
+            )
         else:
             # TODO!!
             ...
-            # !! move button text to strings / markup to kb utils
-            cancel_btn = InlineKeyboardButton('🚫 Отмена',
-                                              callback_data=f'item={t_hash},{list_location}')
-            confirmation_btn = InlineKeyboardButton('❌ Удалить',
-                                          callback_data=f'del2={t_hash},{list_location}')
             update.callback_query.message.edit_text(
                 strings.del_confirm.format(...),  # !!
-                reply_markup=InlineKeyboardMarkup([[cancel_btn, confirmation_btn]])
+                reply_markup=kb.DeletionConfirmationKeyboard(item_id, list_location).build()
             )
         update.callback_query.answer()
 

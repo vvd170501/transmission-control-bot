@@ -96,6 +96,7 @@ class ListNavigationKeyboard:
     LEFT = 'left'
     RIGHT = 'right'
 
+    # pass args in initializer?
     def build(self, items, elements_per_page, current_offset, total_count, list_category):
         step = elements_per_page
         left_offset = current_offset - step if current_offset > 0 else self.LEFT
@@ -224,3 +225,31 @@ class FTPControlKeyboard(ItemActionsKeyboard):
             callback_data=self._action(CallbackQueryActions.show_item)
         )
         return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
+
+
+class DeletionConfirmationKeyboard(ItemActionsKeyboard):
+    def build(self):
+        cancel_btn = InlineKeyboardButton(
+            Buttons.cancel,
+            callback_data=self._action(CallbackQueryActions.show_item)
+        )
+        confirmation_btn = InlineKeyboardButton(
+            Buttons.delete,
+            callback_data=self._action(CallbackQueryActions.confirm_deletion)
+        )
+        return InlineKeyboardMarkup([[cancel_btn, confirmation_btn]])
+
+
+class ReturnToListKeyboard:
+    def __init__(self, list_location):
+        self.list_location = list_location
+
+    def build(self):
+        back_btn = InlineKeyboardButton(
+            Buttons.back,
+            callback_data=query_action(
+                CallbackQueryActions.show_list_part,
+                list_location=self.list_location
+            )
+        )
+        return InlineKeyboardMarkup([[back_btn]])
