@@ -92,6 +92,12 @@ class TBot:
             MessageHandler(Filters.text & (~Filters.command), self.auth),
             group=1  # if group is 0, may interfere with other handlers. Use dynamic filter instead?
         )
+
+        self._add_command_handler('preferences', self.preferences)
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.default_share_status, self.set_default_share_status
+        )
+
         self._add_command_handler('help', self.help)
         self._add_command_handler('disk', self.show_disk_usage)
         self._add_command_handler('limit', self.limit)
@@ -120,6 +126,7 @@ class TBot:
             conversation_fallbacks
         ))
         self._add_command_handler('my_torrents', self.my_torrents)
+        self._add_command_handler('shared_torrents', self.shared_torrents)
         self._add_command_handler('all_torrents', self.all_torrents,
                                   filters=Filters.user(user_id=self.admins))
         # Adding new torrents
@@ -156,6 +163,12 @@ class TBot:
         )
         self._add_inline_button_handler(
             kb.CallbackQueryPatterns.toggle_torrent_status, self.toggle_torrent
+        )
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.edit_share_status, self.edit_share_status
+        )
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.move_torrent, self.move_torrent
         )
         self._add_inline_button_handler(
             kb.CallbackQueryPatterns.delete_torrent, self.delete_torrent
@@ -207,6 +220,18 @@ class TBot:
 
     def unshare_root_ftp(self, update, context):
         self.answer(update, self.driver.unshare_root_ftp())
+
+# --------------------------------------------------------------------------------------------------
+# preferences
+# --------------------------------------------------------------------------------------------------
+
+    def preferences(self, update, context):
+        # TODO!!
+        ...
+
+    def set_default_share_status(self, update, context):
+        # TODO!!
+        ...
 
 # --------------------------------------------------------------------------------------------------
 # setlimit conversation
@@ -345,6 +370,12 @@ class TBot:
         torrents = ...
         self.show_torrents(update, context, torrents, 'my')
 
+    def shared_torrents(self, update, context):
+        uid = update.effective_user.id
+        # TODO!!
+        torrents = ...
+        self.show_torrents(update, context, torrents, 'shr')
+
     def all_torrents(self, update, context):
         # TODO!!
         torrents = ...
@@ -439,6 +470,14 @@ class TBot:
             pass
         update.callback_query.answer()
 
+    def edit_share_status(self, update, context):
+        # TODO!!
+        ...
+
+    def move_torrent(self, update, context):
+        # TODO!!
+        ...
+
     def delete_torrent(self, update, context):
         action, t_hash, list_location = context.match.groups()
         if action == 'del2':
@@ -489,7 +528,7 @@ class TBot:
         if not strings.dir_buttons[update.message.text]:
             self.answer(update, strings.custom_directory, reply_markup=ReplyKeyboardRemove())
             return State.CUSTOM_DIRECTORY
-        # TODO!!
+        # TODO!! async???
         ...
         return State.END
 

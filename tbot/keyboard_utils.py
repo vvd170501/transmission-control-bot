@@ -20,6 +20,7 @@ class QueryPattern(metaclass=QPMeta):
 
 
 class CallbackQueryActions:
+    default_share_status = 'shr'
     show_list_part = 'list'
     show_torrent_info = 'item'
     start_torrent = 'run'
@@ -27,17 +28,27 @@ class CallbackQueryActions:
     show_ftp = 'ftp'
     share_ftp = '+ftp'
     unshare_ftp = '-ftp'
+    share_torrent = '+shr'
+    unshare_torrent = '-shr'
+    move_torrent = 'move'
     delete_torrent = 'del'
-    conform_deletion = 'del2'
+    confirm_deletion = 'del2'
 
 
 class CallbackQueryPatterns:
     # "offset" and "hash" actions were used in previous versions
+    default_share_status = QueryPattern(
+        [CallbackQueryActions.default_share_status],
+        value=r'[01]'
+    )
+
     show_list_part = QueryPattern(
         [CallbackQueryActions.show_list_part, 'offset'],
         offset=r'\w+', category=r'\w+'
     )
-    show_torrent_info = QueryPattern.item_query([CallbackQueryActions.show_torrent_info, 'hash'])
+    show_torrent_info = QueryPattern.item_query([
+        CallbackQueryActions.show_torrent_info, 'hash'
+    ])
     toggle_torrent_status = QueryPattern.item_query([
         CallbackQueryActions.start_torrent,
         CallbackQueryActions.stop_torrent
@@ -47,7 +58,14 @@ class CallbackQueryPatterns:
         CallbackQueryActions.share_ftp,
         CallbackQueryActions.unshare_ftp
     ])
+    edit_share_status = QueryPattern.item_query([
+        CallbackQueryActions.share_torrent,
+        CallbackQueryActions.unshare_torrent
+    ])
+    move_torrent = QueryPattern.item_query([
+        CallbackQueryActions.move_torrent
+    ])
     delete_torrent = QueryPattern.item_query([
         CallbackQueryActions.delete_torrent,
-        CallbackQueryActions.conform_deletion
+        CallbackQueryActions.confirm_deletion
     ])
