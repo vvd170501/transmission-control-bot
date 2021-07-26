@@ -19,6 +19,7 @@ from telegram.error import BadRequest
 import yaml
 
 import strings
+import keyboard_utils as kb
 from driver import Driver
 
 
@@ -58,16 +59,7 @@ def restricted_template(func, *, whitelist):
 
 # noinspection PyUnusedLocal
 class TBot:
-    class RegExps:
-        valid_dirname = re.compile(r'^[\w. -]+$')
-
-        # !! move to kb utils? store action names in separate vars?
-        # "offset" and "hash" actions were used in previous versions
-        show_list_query = re.compile(r'^(?:list|offset)=(\w+),(\w+)$')
-        torrent_info_query = re.compile(r'^(?:item|hash)=(\w+),(\d+,\w+)$')
-        toggle_query = re.compile(r'^(run|stop)=(\w+),(\d+,\w+)$')
-        ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+,\w+)$')
-        delete_torrent_query = re.compile(r'^(del2?)=(\w+),(\d+,\w+)$')
+    valid_dirname = re.compile(r'^[\w. -]+$')
 
     def __init__(self, cfg_path, db_path):
         with open(cfg_path) as f:
@@ -155,17 +147,28 @@ class TBot:
             },
             conversation_fallbacks
         ))
-        self._add_inline_button_handler(self.RegExps.show_list_query, self.show_list_offset)
-        self._add_inline_button_handler(self.RegExps.torrent_info_query, self.torrent_info)
-        self._add_inline_button_handler(self.RegExps.toggle_query, self.toggle_torrent)
-        self._add_inline_button_handler(self.RegExps.delete_torrent_query, self.delete_torrent)
+
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.show_list_part, self.show_list_part
+        )
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.show_torrent_info, self.torrent_info
+        )
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.toggle_torrent_status, self.toggle_torrent
+        )
+        self._add_inline_button_handler(
+            kb.CallbackQueryPatterns.delete_torrent, self.delete_torrent
+        )
 
         if self.driver.ftp_enabled:
             self._add_command_handler('ftp', self.share_root_ftp,
                                       filters=Filters.user(user_id=self.admins))
             self._add_command_handler('noftp', self.unshare_root_ftp,
                                       filters=Filters.user(user_id=self.admins))
-            self._add_inline_button_handler(self.RegExps.ftp_query, self.torrent_ftp_access)
+            self._add_inline_button_handler(
+                kb.CallbackQueryPatterns.ftp_control, self.torrent_ftp_access
+            )
 
     def run(self):
         self.updater.start_polling()
@@ -309,7 +312,7 @@ class TBot:
         else:
             message.edit_text(msg_text, reply_markup=markup)
 
-    def show_list_offset(self, update, context):
+    def show_list_part(self, update, context):
         offset, category = context.match.groups()
         if offset == 'left':
             self.answer_callback(update, strings.left)
@@ -323,7 +326,7 @@ class TBot:
         else:
             if update.effective_user.id not in self.admins:
                 logging.warning(
-                    f'Unauthorized access attempt (show_list_offset, '
+                    f'Unauthorized access attempt (show_list_part, '
                     f'user {update.effective_user.id})'
                 )
                 return
@@ -492,7 +495,7 @@ class TBot:
 
     def custom_directory(self, update, context):
         dirname = update.message.text
-        if self.RegExps.valid_dirname.match(dirname) and dirname not in ['.', '..']:
+        if self.valid_dirname.match(dirname) and dirname not in ['.', '..']:
             # TODO!!
             ...
             return State.END
