@@ -153,10 +153,10 @@ class TBot:
         ))
 
         self._add_inline_button_handler(
-            kb.CallbackQueryPatterns.show_list_part, self.show_list_part
+            kb.CallbackQueryPatterns.show_list_part, self.show_torrent_list_part
         )
         self._add_inline_button_handler(
-            kb.CallbackQueryPatterns.show_torrent_info, self.torrent_info
+            kb.CallbackQueryPatterns.show_item, self.torrent_info
         )
         self._add_inline_button_handler(
             kb.CallbackQueryPatterns.toggle_torrent_status, self.toggle_torrent
@@ -291,14 +291,17 @@ class TBot:
 
         # TODO!!
         ftp = ...
-        msg_text = strings.format_torrents(torrents, offset, total_count, ftp)
-        markup = build_menu(torrents, offset, total_count)
+        msg_text = ...  # strings.format_torrents(torrents, offset, total_count, ftp)
+        hashes = [torrent.hashString for torrent in torrents]
+        markup = kb.ListNavigationKeyboard().build(
+            hashes, elements_per_page, offset, total_count, category
+        )
         if message is None:
             self.answer(update, msg_text, reply_markup=markup)
         else:
             message.edit_text(msg_text, reply_markup=markup)
 
-    def show_list_part(self, update, context):
+    def show_torrent_list_part(self, update, context):
         offset, category = context.match.groups()
         if offset == 'left':
             self.answer_callback(update, strings.left)
@@ -310,12 +313,6 @@ class TBot:
             # TODO!!
             torrents = ...
         else:
-            if update.effective_user.id not in self.admins:
-                logging.warning(
-                    f'Unauthorized access attempt (show_list_part, '
-                    f'user {update.effective_user.id})'
-                )
-                return
             # TODO!!
             torrents = ...
         try:
@@ -337,41 +334,19 @@ class TBot:
         torrents = ...
         self.show_torrents(update, context, torrents, 'shr')
 
-    def all_torrents(self, update, context):
-        # TODO!!
-        torrents = ...
-        self.show_torrents(update, context, torrents, 'all')
-
-    def _show_torrent_info(self, update, context, t_hash, list_location, stopping=False):
+    def _show_torrent_info(self, update, context, item_id, list_location, stopping=False):
         user = update.effective_user.id
 
-        def build_menu(t_hash, list_location, active):
-            # TODO!! move to kb utils
-            action = 'stop' if active else 'run'
-            toggle_btn = InlineKeyboardButton('⏸ Остановить' if active else '▶ Запустить',
-                                              callback_data=f'{action}={t_hash},{list_location}')
-            ftp_btn = InlineKeyboardButton('📁 Настройки FTP-доступа',
-                                           callback_data=f'ftp={t_hash},{list_location}')
-            # TODO add move button
-            delete_btn = InlineKeyboardButton('❌ Удалить торрент и скачанные файлы',
-                                              callback_data=f'del={t_hash},{list_location}')
-            back_btn = InlineKeyboardButton('↩ Назад', callback_data=f'list={list_location}')
-            refresh_btn = InlineKeyboardButton('🔄',
-                                               callback_data=f'item={t_hash},{list_location}')
-            rows = [
-                [toggle_btn],
-                [ftp_btn] if self.driver.ftp_enabled else [],
-                [delete_btn],
-                [back_btn, refresh_btn]
-            ]
-            return InlineKeyboardMarkup(rows)
+        markup = kb.TorrentControlKeyboard(item_id, list_location).build(
+            ..., ..., ..., self.driver.ftp_enabled
+        )
 
         # TODO!!
         ...
 
     def torrent_info(self, update, context):
-        t_hash, list_location = context.match.groups()  # TODO!! hash -> id/key
-        self._show_torrent_info(update, context, t_hash, list_location)
+        item_id, list_location = context.match.groups()
+        self._show_torrent_info(update, context, item_id, list_location)
         update.callback_query.answer()
 
     def toggle_torrent(self, update, context):
@@ -388,23 +363,7 @@ class TBot:
     def torrent_ftp_access(self, update, context):
         # TODO allow filtered access to categories
         # TODO select tl (manually / based on size? 1h/18GB(5MBps))
-        action, t_hash, list_location = context.match.groups()
-
-        def build_menu(t_hash, list_location, is_shared):
-            # TODO!! move to kb utils
-            start_btn = InlineKeyboardButton(
-                '▶ Открыть доступ' if not is_shared else '🔄 Продлить доступ',
-                callback_data=f'+ftp={t_hash},{list_location}'
-            )
-            stop_btn = InlineKeyboardButton(
-                '⏹️ Остановить доступ',
-                callback_data=f'-ftp={t_hash},{list_location}'
-            )
-            back_btn = InlineKeyboardButton(
-                '↩ Назад',
-                callback_data=f'item={t_hash},{list_location}'
-            )
-            return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
+        action, t_hash, list_location = context.match.groups()  # !!
 
         if action == '-':
             # TODO!!
