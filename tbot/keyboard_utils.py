@@ -1,12 +1,13 @@
 import re
+from abc import abstractmethod, ABC
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
+import strings
 from strings import Buttons
 
 
 class CallbackQueryActions:
-    default_share_status = 'shr'
     show_list_part = 'list'
     show_item = 'item'
     start_torrent = 'run'
@@ -19,6 +20,10 @@ class CallbackQueryActions:
     move_torrent = 'move'
     delete_torrent = 'del'
     confirm_deletion = 'del2'
+
+
+class PreferenceActions:
+    default_share = 'shr'
 
 
 def query_pattern(action_names, **part_patterns):
@@ -49,16 +54,18 @@ def build_list_location(offset, category):
 
 
 def split_list_location(location):
-    return location.split(',')
+    offset, category = location.split(',')
+    return {'offset': offset, 'category': category}
 
 
 class CallbackQueryPatterns:
-    # "offset" and "hash" actions were used in previous versions
-    default_share_status = query_pattern(
-        [CallbackQueryActions.default_share_status],
-        value=r'[01]'
+    # if more preferences are added, use one regex for all?
+    default_share = query_pattern(
+        [PreferenceActions.default_share],
+        value=r'[?01]'
     )
 
+    # "offset" and "hash" actions were used in previous versions
     show_list_part = query_pattern(
         [CallbackQueryActions.show_list_part, 'offset'],
         offset=r'\w+', category=r'\w+'
@@ -88,65 +95,108 @@ class CallbackQueryPatterns:
     ])
 
 
-class PreferencesKeyboard:
-    ...  # TODO!!
+class InlineKeyboard(ABC):
+    def build(self):
+        return InlineKeyboardMarkup(self._buttons())
+
+    @abstractmethod
+    def _buttons(self):
+        raise NotImplementedError()
 
 
-class ListNavigationKeyboard:
+class PreferencesKeyboard(InlineKeyboard):
+    EDIT = '?'
+
+    def __init__(self, preferences):
+        self.preferences = preferences
+
+    def _buttons(self):
+        default_share = InlineKeyboardButton(
+            Buttons.default_share,
+            callback_data=query_action(PreferenceActions.default_share, value=self.EDIT)
+        )
+        return [
+            [default_share],
+        ]
+
+
+class PreferenceEditKeyboard(InlineKeyboard):
+    def __init__(self, pref_name):
+        # NOTE pref_name -- full preference name (attr of PreferenceActions). rewrite later?
+        self.pref_name = pref_name
+
+    def _buttons(self):
+        options = getattr(strings.Preferences, self.pref_name).values()
+        return [
+            [InlineKeyboardButton(
+                description,
+                callback_data=query_action(getattr(PreferenceActions, self.pref_name), value=value))
+            ] for description, value in options
+        ]
+
+
+class ListNavigationKeyboard(InlineKeyboard):
     LEFT = 'left'
     RIGHT = 'right'
 
     # pass args in initializer?
-    def build(self, items, elements_per_page, current_offset, total_count, list_category):
-        step = elements_per_page
-        left_offset = current_offset - step if current_offset > 0 else self.LEFT
-        right_offset = current_offset + step if current_offset + step < total_count else self.RIGHT
+    def __init__(self, items, elements_per_page, current_offset, total_count, list_category):
+        self.items = items
+        self.step = elements_per_page
+        self.offset = current_offset
+        self.max_index = total_count
+        self.category = list_category
+
+    def _buttons(self):
+        left_offset = self.offset - self.step if self.offset > 0 else self.LEFT
+        right_offset = (self.offset + self.step if self.offset + self.step < self.max_index
+                        else self.RIGHT)
         navigation_row = [
             InlineKeyboardButton(
                 Buttons.left,
                 callback_data=query_action(
                     CallbackQueryActions.show_list_part,
-                    offset=left_offset, category=list_category
+                    offset=left_offset, category=self.category
                 )
             ),
             InlineKeyboardButton(
                 Buttons.refresh,
                 callback_data=query_action(
                     CallbackQueryActions.show_list_part,
-                    offset=current_offset, category=list_category
+                    offset=self.offset, category=self.category
                 )
             ),
             InlineKeyboardButton(
                 Buttons.right,
                 callback_data=query_action(
                     CallbackQueryActions.show_list_part,
-                    offset=right_offset, category=list_category
+                    offset=right_offset, category=self.category
                 )
             )
         ]
 
-        if not items:  # still need update button. Full row is used for consistency
-            return InlineKeyboardMarkup([navigation_row])
+        if not self.items:  # still need update button. Full row is used for consistency
+            return [navigation_row]
         buttons = [
             InlineKeyboardButton(
                 str(index + 1),
                 callback_data=item_query_action(
                     CallbackQueryActions.show_item,
-                    item, build_list_location(current_offset, list_category)
+                    item, build_list_location(self.offset, self.category)
                 )
-            ) for index, item in enumerate(items)
+            ) for index, item in enumerate(self.items)
         ]
-        if len(items) <= 6:
+        if len(self.items) <= 6:
             rows = [buttons]
         else:  # too many buttons for a nice single row
             # if odd, extra button goes to the first row
-            mid_point = len(items) - len(items) // 2
+            mid_point = len(self.items) - len(self.items) // 2
             rows = [buttons[:mid_point], buttons[mid_point:]]
         rows.append(navigation_row)
-        return InlineKeyboardMarkup(rows)
+        return rows
 
 
-class ItemActionsKeyboard:
+class ItemActionsKeyboard(InlineKeyboard):
     def __init__(self, item_id, list_location):
         self.item_id = item_id
         self.list_location = list_location
@@ -156,23 +206,40 @@ class ItemActionsKeyboard:
 
 
 class TorrentControlKeyboard(ItemActionsKeyboard):
-    def build(self, is_active, is_owned, is_shared, need_ftp_control):
+    def __init__(self, item_id, list_location, is_active, is_owned, is_shared, need_ftp_control):
+        super().__init__(item_id, list_location)
+        self.is_active = is_active
+        self.is_owned = is_owned
+        self.is_shared = is_shared
+        self.need_ftp_control = need_ftp_control
+
+    def _own_torrent_controls_head(self):
+        # need a better method name? or try rewriting logic
         toggle_btn = InlineKeyboardButton(
-            Buttons.stop_torrent if is_active else Buttons.start_torrent,
+            Buttons.stop_torrent if self.is_active else Buttons.start_torrent,
             callback_data=self._action(
-                CallbackQueryActions.stop_torrent if is_active
+                CallbackQueryActions.stop_torrent if self.is_active
                 else CallbackQueryActions.start_torrent
             )
         )
-        # TODO don't create unused buttons? check perf impact
+        return [
+            [toggle_btn]
+        ]
+
+    def _ftp_controls(self):
         ftp_btn = InlineKeyboardButton(
             Buttons.ftp_settings,
             callback_data=self._action(CallbackQueryActions.show_ftp)
         )
+        return [
+            [ftp_btn]
+        ]
+
+    def _own_torrent_controls(self):
         toggle_share_btn = InlineKeyboardButton(
-            Buttons.unshare_torrent if is_shared else Buttons.share_torrent,
+            Buttons.unshare_torrent if self.is_shared else Buttons.share_torrent,
             callback_data=self._action(
-                CallbackQueryActions.unshare_torrent if is_shared
+                CallbackQueryActions.unshare_torrent if self.is_shared
                 else CallbackQueryActions.share_torrent
             )
         )
@@ -184,36 +251,45 @@ class TorrentControlKeyboard(ItemActionsKeyboard):
             Buttons.delete_torrent,
             callback_data=self._action(CallbackQueryActions.delete_torrent)
         )
+        return [
+            [toggle_share_btn],
+            [move_btn],
+            [delete_btn]
+        ]
+
+    def _buttons(self):
         back_btn = InlineKeyboardButton(
             Buttons.back,
             callback_data=query_action(
-                CallbackQueryActions.show_list_part, list_location=self.list_location  # use split?
+                # use **split_list_location(self.list_location)?
+                CallbackQueryActions.show_list_part, list_location=self.list_location
             )
         )
         refresh_btn = InlineKeyboardButton(
             Buttons.refresh,
             callback_data=self._action(CallbackQueryActions.show_item)
         )
-
-        rows = [
-            [toggle_btn]
+        rows = []
+        if self.is_owned:
+            rows += self._own_torrent_controls_head()  # start/stop
+        if self.need_ftp_control:
+            rows += self._ftp_controls()
+        if self.is_owned:
+            rows += self._own_torrent_controls()  # (un)share, move, delete
+        rows += [
+            [back_btn, refresh_btn]
         ]
-        if need_ftp_control:
-            rows.append([ftp_btn])
-        if is_owned:
-            rows += [
-                [toggle_share_btn],
-                [move_btn],
-                [delete_btn]
-            ]
-        rows += [back_btn, refresh_btn]
-        return InlineKeyboardMarkup(rows)
+        return rows
 
 
 class FTPControlKeyboard(ItemActionsKeyboard):
-    def build(self, is_shared):
+    def __init__(self, item_id, list_location, is_shared):
+        super().__init__(item_id, list_location)
+        self.is_shared = is_shared
+
+    def _buttons(self):
         start_btn = InlineKeyboardButton(
-            Buttons.ftp_share if not is_shared else Buttons.ftp_renew,
+            Buttons.ftp_share if not self.is_shared else Buttons.ftp_renew,
             callback_data=self._action(CallbackQueryActions.share_ftp)
         )
         stop_btn = InlineKeyboardButton(
@@ -224,11 +300,11 @@ class FTPControlKeyboard(ItemActionsKeyboard):
             Buttons.back,
             callback_data=self._action(CallbackQueryActions.show_item)
         )
-        return InlineKeyboardMarkup([[start_btn], [stop_btn], [back_btn]])
+        return [[start_btn], [stop_btn], [back_btn]]
 
 
 class DeletionConfirmationKeyboard(ItemActionsKeyboard):
-    def build(self):
+    def _buttons(self):
         cancel_btn = InlineKeyboardButton(
             Buttons.cancel,
             callback_data=self._action(CallbackQueryActions.show_item)
@@ -237,14 +313,14 @@ class DeletionConfirmationKeyboard(ItemActionsKeyboard):
             Buttons.delete,
             callback_data=self._action(CallbackQueryActions.confirm_deletion)
         )
-        return InlineKeyboardMarkup([[cancel_btn, confirmation_btn]])
+        return [[cancel_btn, confirmation_btn]]
 
 
-class ReturnToListKeyboard:
+class ReturnToListKeyboard(InlineKeyboard):
     def __init__(self, list_location):
         self.list_location = list_location
 
-    def build(self):
+    def _buttons(self):
         back_btn = InlineKeyboardButton(
             Buttons.back,
             callback_data=query_action(
@@ -252,4 +328,4 @@ class ReturnToListKeyboard:
                 list_location=self.list_location
             )
         )
-        return InlineKeyboardMarkup([[back_btn]])
+        return [[back_btn]]

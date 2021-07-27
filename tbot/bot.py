@@ -94,7 +94,7 @@ class TBot:
 
         self._add_command_handler('preferences', self.preferences)
         self._add_inline_button_handler(
-            kb.CallbackQueryPatterns.default_share_status, self.set_default_share_status
+            kb.CallbackQueryPatterns.default_share, self.set_default_share_status
         )
 
         self._add_command_handler('help', self.help)
@@ -292,10 +292,10 @@ class TBot:
         # TODO!!
         ftp = ...
         msg_text = ...  # strings.format_torrents(torrents, offset, total_count, ftp)
-        hashes = [torrent.hashString for torrent in torrents]
-        markup = kb.ListNavigationKeyboard().build(
+        hashes = [torrent.hashString for torrent in torrents]  # !! get hashes from driver?
+        markup = kb.ListNavigationKeyboard(
             hashes, elements_per_page, offset, total_count, category
-        )
+        ).build()
         if message is None:
             self.answer(update, msg_text, reply_markup=markup)
         else:
@@ -337,9 +337,9 @@ class TBot:
     def _show_torrent_info(self, update, context, item_id, list_location, stopping=False):
         user = update.effective_user.id
 
-        markup = kb.TorrentControlKeyboard(item_id, list_location).build(
-            ..., ..., ..., self.driver.ftp_enabled
-        )
+        markup = kb.TorrentControlKeyboard(
+            item_id, list_location, ..., ..., ..., self.driver.ftp_enabled
+        ).build()
 
         # TODO!!
         ...
@@ -383,7 +383,7 @@ class TBot:
         try:
             update.callback_query.message.edit_text(
                 msg_text,
-                reply_markup=build_menu(t_hash, list_location, ...),  # !!
+                reply_markup=kb.FTPControlKeyboard(t_hash, list_location, ...).build(),  # !!
                 parse_mode='markdown'
             )
         except BadRequest:

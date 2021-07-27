@@ -156,10 +156,21 @@ def format_ftp(addr, details):
     return f'Адрес: `{addr}`\nЛогин: `{login}`\nПароль: `{password}`\nДействует до: {timer_info}'
 
 
+class Preferences:
+    # use something better?
+    default_share = {
+        'private': ('👤 Торренты видны только мне', 0),
+        'public': ('👥 Торренты видны всем', 1)
+    }
+
+
 class Buttons:
+    default_share = 'Видимость торрентов по умолчанию'
+
     left = '⬅'
     refresh = '🔄'
     right = '➡'
+
     stop_torrent = '⏸ Остановить'
     start_torrent = '▶ Запустить'
     ftp_settings = '📁 Настройки FTP-доступа'
