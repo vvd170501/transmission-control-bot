@@ -7,7 +7,6 @@ import re
 import sys
 import time
 import traceback
-from enum import Enum
 from functools import wraps, partial
 from io import BytesIO
 from pathlib import Path
@@ -32,7 +31,7 @@ ftp_query = re.compile(r'^([+-]?)ftp=(\w+),(\d+),(\w+)$')
 del_query = re.compile(r'^(del2?)=(\w+),(\d+),(\w+)$')
 
 
-class State(Enum):
+class State:
     SELDIR = 1
     MKDIR = 2
     SELDL = 11
