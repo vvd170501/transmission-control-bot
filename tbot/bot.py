@@ -19,6 +19,7 @@ from telegram.error import BadRequest
 import yaml
 
 import strings
+import utils
 import keyboard_utils as kb
 from driver import Driver
 
@@ -59,9 +60,7 @@ def restricted_template(func, *, whitelist):
 
 # noinspection PyUnusedLocal
 class TBot:
-    valid_dirname = re.compile(r'^[\w. -]+$')
-
-    def __init__(self, cfg_path, db_path):
+    def __init__(self, cfg_path, data_dir):
         with open(cfg_path) as f:
             config = yaml.safe_load(f)
 
@@ -72,9 +71,8 @@ class TBot:
         )
         self.bot = self.updater.bot
         self.driver = Driver(
-            db_path=db_path,
-            rootdir=config['rootdir'],
-            reserved_space=config['reserved_space'],
+            data_dir=data_dir,
+            reserved_space=utils.parse_size(config['reserved_space']),
             client_cfg=config['client_cfg'],
             ftp_cfg=config['ftp'],
             job_queue=self.updater.job_queue
@@ -449,7 +447,7 @@ class TBot:
 
     def custom_directory(self, update, context):
         dirname = update.message.text
-        if self.valid_dirname.match(dirname) and dirname not in ['.', '..']:
+        if self.driver.is_valid_dirname(dirname):
             # TODO!!
             ...
             return State.END
@@ -509,8 +507,8 @@ class TBot:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', metavar='FILE', help='Config file', required=True)
-    parser.add_argument('--db', metavar='FILE',
-                        help='DB file (default: "config_directory/data.db")')
+    parser.add_argument('--data', metavar='PATH',
+                        help='Path to data files (default: "%config_directory%/data")')
     parser.add_argument('--log', metavar='FILE', help='Log file (default: write to stderr)')
     args = parser.parse_args()
 
@@ -524,8 +522,8 @@ def main():
     else:
         logging_cfg['stream'] = sys.stderr
     logging.basicConfig(**logging_cfg)
-    db_path = args.db or str(Path(args.config).parent.joinpath('data.db').absolute())
-    bot = TBot(args.config, db_path)
+    data_dir = args.data or str(Path(args.config).parent.joinpath('data').absolute())
+    bot = TBot.create(args.config, data_dir)
     bot.run()
 
 

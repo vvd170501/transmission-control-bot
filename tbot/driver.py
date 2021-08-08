@@ -1,5 +1,9 @@
+import re
+
 class Driver:
-    def __init__(self, *, db_path, rootdir, reserved_space, client_cfg, ftp_cfg, job_queue):
+    valid_dirname = re.compile(r'^[\w. -]+$')
+
+    def __init__(self, *, data_dir, reserved_space, client_cfg, ftp_cfg, job_queue):
         self.ftp_enabled = ...
 
     def get_whitelist(self):
@@ -19,3 +23,6 @@ class Driver:
 
     def unshare_root_ftp(self):
         ...
+
+    def is_valid_dirname(self, dirname):
+        return self.valid_dirname.match(dirname) and dirname not in ['.', '..']

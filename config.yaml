@@ -1,13 +1,11 @@
 token: "123456:xxxxxxx"  # Telegram token for the bot
 password: "bot_password"  # A password to authenticate new users
 
-# Root directory for downloads (should be configured for transmission manually)
-# Currently used only to check free space
-rootdir: "/mnt/data/transmission_downloads"
-# Minimal amount of free space (in bytes) on the partition with rootdir.
+# Minimal amount of free space on the partition which is used for downloads.
 # If the amount of free space goes below this number, all torrents are automatically stopped.
-# Use 0 to disable free space checker
-reserved_space: 1000000000  # ~1 GB
+# Default unit is bytes. You may use suffixes "K", "M", "G" or "T" and float values
+# Set to 0 to disable free space checker
+reserved_space: 1G  # reserve 1 GiB
 
 client_cfg:  # Options for transmission-rpc client
     host: "127.0.0.1"
@@ -15,8 +13,9 @@ client_cfg:  # Options for transmission-rpc client
     username: "transmission"
     password: "some_secure_password"
 
+# If host is not 127.0.0.1, FTP is automatically disabled
 ftp:
-    enabled: False  # If disabled, all other options are ignored
+    enabled: False  # If False, all other options are ignored.
     address: "192.168.1.10:2100"  # address and port to listen on
-    # Time limit in seconds. After this period opened FTP shares will be automatically closed
-    tl: 3600
+    # FTP shares are temporary, they are closed after the specified time period.
+    duration: 3600  # seconds
