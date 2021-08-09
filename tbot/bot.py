@@ -18,10 +18,10 @@ from telegram.ext.filters import Filters
 from telegram.error import BadRequest
 import yaml
 
-import strings
-import utils
-import keyboard_utils as kb
-from driver import Driver
+from . import strings
+from . import utils
+from . import keyboard_utils as kb
+from .driver import Driver
 
 
 class State(Enum):
@@ -60,7 +60,7 @@ def restricted_template(func, *, whitelist):
 
 # noinspection PyUnusedLocal
 class TBot:
-    def __init__(self, cfg_path, data_dir):
+    def __init__(self, cfg_path: Path, data_dir: Path):
         with open(cfg_path) as f:
             config = yaml.safe_load(f)
 
@@ -522,8 +522,9 @@ def main():
     else:
         logging_cfg['stream'] = sys.stderr
     logging.basicConfig(**logging_cfg)
-    data_dir = args.data or str(Path(args.config).parent.joinpath('data').absolute())
-    bot = TBot.create(args.config, data_dir)
+    cfg_path = args.config
+    data_dir = Path(args.data) if args.data else cfg_path.parent.joinpath('data').absolute()
+    bot = TBot(cfg_path, data_dir)
     bot.run()
 
 

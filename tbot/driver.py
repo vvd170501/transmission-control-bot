@@ -1,10 +1,43 @@
 import re
+import sqlite3
+from enum import Flag
+from pathlib import Path
+
+from . import strings
+
+
+class FlagPreferences(Flag):
+    default_share = 1
+    private_notifications = 2
+    shared_notifications = 4
+
+    def description(self):
+        if self.name is None:
+            raise NotImplementedError()  # multiple or zero values
+        return getattr(strings.Preferences, self.name)['description']
+
+    def status_description(self, value):
+        if self.name is None:
+            raise NotImplementedError()
+        return getattr(strings.Preferences, self.name)['values'][value]['status']
+
+    def choice_description(self, value):
+        if self.name is None:
+            raise NotImplementedError()
+        return getattr(strings.Preferences, self.name)['values'][value]['choice']
+
 
 class Driver:
     valid_dirname = re.compile(r'^[\w. -]+$')
 
-    def __init__(self, *, data_dir, reserved_space, client_cfg, ftp_cfg, job_queue):
-        self.ftp_enabled = ...
+    def __init__(self, *, data_dir: Path, reserved_space: int, client_cfg, ftp_cfg, job_queue):
+        self._db = sqlite3.Connection(data_dir / 'data.db')
+        ...
+        self._init_db()
+
+    @property
+    def ftp_enabled(self):
+        return ...
 
     def get_whitelist(self):
         ...
@@ -26,3 +59,6 @@ class Driver:
 
     def is_valid_dirname(self, dirname):
         return self.valid_dirname.match(dirname) and dirname not in ['.', '..']
+
+    def _init_db(self):
+        pass

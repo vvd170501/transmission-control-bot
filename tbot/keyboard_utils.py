@@ -3,8 +3,8 @@ from abc import abstractmethod, ABC
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
-import strings
-from strings import Buttons
+from . import strings
+from .strings import Buttons
 
 
 class CallbackQueryActions:

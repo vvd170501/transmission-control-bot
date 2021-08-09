@@ -1,6 +1,8 @@
 import time
 
+
 units = ['B', 'KB', 'MB', 'GB', 'TB']
+
 
 def format_size(size):
     i = 0
@@ -8,6 +10,7 @@ def format_size(size):
         size /= 1024
         i += 1
     return f'{size:.2f} {units[i]}'
+
 
 def format_speed(bps):
     if bps < 1000:
@@ -158,9 +161,27 @@ def format_ftp(addr, details):
 
 class Preferences:
     # use something better?
+    _notification_pref_values = {
+        False: {'choice': '🔔 Включить', 'status': '🔔 Включены'},
+        True: {'choice': '🔕 Отключить', 'status': '🔕 Отключены'}
+    }
+
     default_share = {
-        'private': ('👤 Торренты видны только мне', 0),
-        'public': ('👥 Торренты видны всем', 1)
+        'description': 'Видимость торрентов по умолчанию',
+        'values': {
+            False: {'choice': '👤 Торренты видны только вам', 'status': '👤 Видны только Вам'},
+            True: {'choice': '👥 Торренты видны всем', 'status': '👥 Видны всем'}
+        }
+    }
+
+    private_notifications = {
+        'description': 'Уведомления о загрузке личных торрентов',
+        'values': _notification_pref_values
+    }
+
+    shared_notifications = {
+        'description': 'Уведомления о загрузке общих торрентов',
+        'values': _notification_pref_values
     }
 
 
