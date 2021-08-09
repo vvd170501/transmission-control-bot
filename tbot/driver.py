@@ -7,9 +7,15 @@ from . import strings
 
 
 class FlagPreferences(Flag):
-    default_share = 1
-    private_notifications = 2
-    shared_notifications = 4
+    default_share = (1, False)
+    private_notifications = (2, True)
+    shared_notifications = (4, False)
+
+    def __new__(cls, value, default_value):
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.default_value = default_value
+        return obj
 
     def description(self):
         if self.name is None:

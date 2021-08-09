@@ -162,8 +162,8 @@ def format_ftp(addr, details):
 class Preferences:
     # use something better?
     _notification_pref_values = {
-        False: {'choice': '🔔 Включить', 'status': '🔔 Включены'},
-        True: {'choice': '🔕 Отключить', 'status': '🔕 Отключены'}
+        True: {'choice': '🔔 Включить', 'status': '🔔 Включены'},
+        False: {'choice': '🔕 Отключить', 'status': '🔕 Отключены'}
     }
 
     default_share = {
