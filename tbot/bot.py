@@ -1,17 +1,10 @@
-#!/usr/bin/env python3
-
-import argparse
-import logging
 import re
-import sys
-import traceback
 from enum import Enum
 from functools import wraps
 from pathlib import Path
 from signal import SIGINT, SIGTERM, SIGABRT
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, \
-                     InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater,\
                          CommandHandler, MessageHandler, ConversationHandler, CallbackQueryHandler
 from telegram.ext.filters import Filters
@@ -31,17 +24,6 @@ class State(Enum):
     SELECT_UPLOAD_LIMIT = 12
     SELECT_LIMIT_DURATION = 13
     END = ConversationHandler.END
-
-
-def log_error():
-    e = traceback.format_exc()
-    logging.error(e)
-
-
-def speed_format(kbps):
-    if kbps < 1000:
-        return f'{kbps} KB/s'
-    return f'{kbps/1000:.2f} MB/s'
 
 
 # noinspection PyUnusedLocal
@@ -492,35 +474,3 @@ class TBot:
             return
         if hasattr(self, 'ftpd'):
             self.ftpd.force_stop()
-
-# --------------------------------------------------------------------------------------------------
-# BOT END
-# --------------------------------------------------------------------------------------------------
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', metavar='FILE', help='Config file', required=True)
-    parser.add_argument('--data', metavar='PATH',
-                        help='Path to data files (default: "%config_directory%/data")')
-    parser.add_argument('--log', metavar='FILE', help='Log file (default: write to stderr)')
-    args = parser.parse_args()
-
-    logging_cfg = {
-        'style': '{',
-        'format': '[{asctime}] {threadName}:{levelname} - {message}',
-        'datefmt': '%Y-%m-%d %H:%M:%S'
-    }
-    if args.log:
-        logging_cfg['filename'] = args.log
-    else:
-        logging_cfg['stream'] = sys.stderr
-    logging.basicConfig(**logging_cfg)
-    cfg_path = args.config
-    data_dir = Path(args.data) if args.data else cfg_path.parent.joinpath('data').absolute()
-    bot = TBot(cfg_path, data_dir)
-    bot.run()
-
-
-if __name__ == '__main__':
-    main()

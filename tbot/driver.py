@@ -66,6 +66,8 @@ class Driver:
     valid_dirname = re.compile(r'^[\w. -]+$')
 
     def __init__(self, *, data_dir: Path, reserved_space: int, client_cfg, ftp_cfg, job_queue):
+        if not data_dir.exists():
+            data_dir.mkdir(parents=True)
         self._db = sqlite3.connect(data_dir / 'data.db',
                                    factory=MTSQLConnection, check_same_thread=False)
         ...
@@ -105,19 +107,19 @@ class Driver:
     def _init_db(self):
         with self._db:  # subclass sqlite3.Connection to lock automatically?
             if self._db.execute(
-                    'SELECT name FROM sqlite_master WHERE type=\'table\' AND name=torrents'
+                    'SELECT name FROM sqlite_master WHERE type=\'table\' AND name=\'torrents\''
             ).fetchone() is not None:
                 return
             self._db.execute(
-                'CREATE TABLE users(id INT PRIMARY KEY, flag_preferences INT)'
+                'CREATE TABLE users (id INT PRIMARY KEY, flag_preferences INT)'
             )
             self._db.execute(
-                'CREATE TABLE torrents('
+                'CREATE TABLE torrents ('
                 'hash BLOB PRIMARY KEY,'
                 'owner INT,'
                 'is_watched INT,'
                 'is_shared INT,'
-                'FOREIGN KEY(owner) REFERENCES users(id)'
+                'FOREIGN KEY (owner) REFERENCES users(id)'
                 ')'
             )
             self._db.execute('CREATE INDEX torrents_owner_idx on torrents(owner)')
