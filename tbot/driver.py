@@ -1,3 +1,4 @@
+import logging
 import re
 import sqlite3
 from enum import Flag
@@ -110,6 +111,7 @@ class Driver:
                     'SELECT name FROM sqlite_master WHERE type=\'table\' AND name=\'torrents\''
             ).fetchone() is not None:
                 return
+            logging.info(f'Init DB - started')
             self._db.execute(
                 'CREATE TABLE users (id INT PRIMARY KEY, flag_preferences INT)'
             )
@@ -125,3 +127,4 @@ class Driver:
             self._db.execute('CREATE INDEX torrents_owner_idx on torrents(owner)')
             self._db.execute('CREATE INDEX torrents_watched_idx on torrents(is_watched)')
             self._db.execute('CREATE INDEX torrents_shared_idx on torrents(is_shared)')
+        logging.info(f'Init DB - OK')
