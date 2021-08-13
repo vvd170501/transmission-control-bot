@@ -168,7 +168,7 @@ class TBot:
         self.answer(update, 'Input password to continue!')
 
     def help(self, update, context):
-        self.answer(update, strings.help(self.driver.ftp_enabled))
+        self.answer(update, strings.help)
 
     def limit(self, update, context):
         self.answer(update, self.driver.get_speed_limits())
