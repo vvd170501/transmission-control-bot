@@ -138,8 +138,6 @@ class TBot:
         )
 
         if self.driver.ftp_enabled:
-            self._add_command_handler('ftp', self.share_root_ftp)
-            self._add_command_handler('noftp', self.unshare_root_ftp)
             self._add_inline_button_handler(
                 kb.CallbackQueryPatterns.ftp_control, self.torrent_ftp_access
             )
@@ -175,12 +173,6 @@ class TBot:
 
     def show_disk_usage(self, update, context):
         self.answer(update, self.driver.get_disk_usage())
-
-    def share_root_ftp(self, update, context):
-        self.answer(update, self.driver.share_root_ftp())
-
-    def unshare_root_ftp(self, update, context):
-        self.answer(update, self.driver.unshare_root_ftp())
 
 # --------------------------------------------------------------------------------------------------
 # preferences

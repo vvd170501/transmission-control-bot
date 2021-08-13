@@ -96,12 +96,6 @@ class Driver:
     def get_disk_usage(self):
         ...
 
-    def share_root_ftp(self):
-        ...
-
-    def unshare_root_ftp(self):
-        ...
-
     def is_valid_dirname(self, dirname):
         return self.valid_dirname.match(dirname) and dirname not in ['.', '..']
 
