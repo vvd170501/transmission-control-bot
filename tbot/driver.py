@@ -68,7 +68,7 @@ class Driver:
     def __init__(self, *, data_dir: Path, reserved_space: int, client_cfg, ftp_cfg, job_queue):
         if not data_dir.exists():
             data_dir.mkdir(parents=True)
-        self._db = sqlite3.connect(data_dir / 'data.db',
+        self._db = sqlite3.connect(data_dir / 'main.db',
                                    factory=MTSQLConnection, check_same_thread=False)
         ...
         self._init_db()
