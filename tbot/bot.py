@@ -44,20 +44,6 @@ def speed_format(kbps):
     return f'{kbps/1000:.2f} MB/s'
 
 
-def restricted_template(func, *, whitelist):
-    @wraps(func)
-    def wrapped(update, context, *args, **kwargs):
-        user_id = update.effective_user.id
-        if callable(whitelist):
-            real_whitelist = whitelist()
-        else:
-            real_whitelist = whitelist
-        if user_id not in real_whitelist:
-            return
-        return func(update, context, *args, **kwargs)
-    return wrapped
-
-
 # noinspection PyUnusedLocal
 class TBot:
     def __init__(self, cfg_path: Path, data_dir: Path):
@@ -182,11 +168,11 @@ class TBot:
 
     def auth(self, update, context):
         user = update.effective_user.id
-        # text message from a whitelisted user. Move this check to a dynamic filter?
-        if user in self.driver.get_whitelist():
+        # text message from a whitelisted user. Use a dynamic filter for a handler instead?
+        if self.driver.is_valid_user(user):
             return
         if update.message.text == self.password:
-            self.driver.whitelist_user(user)
+            self.driver.add_user(user)
             msg = 'You are now authenticated!'
         else:
             msg = 'Incorrect password!'
@@ -470,8 +456,16 @@ class TBot:
 # utils
 # --------------------------------------------------------------------------------------------------
 
-    def _make_restricted(self, function):
-        return restricted_template(function, whitelist=self.driver.get_whitelist)
+    def _make_restricted(self, callback):
+
+        @wraps(callback)
+        def wrapped(update, context, *args, **kwargs):
+            user_id = update.effective_user.id
+            if not self.driver.is_valid_user(user_id):
+                return
+            return callback(update, context, *args, **kwargs)
+
+        return wrapped
 
     def _add_handler(self, handler, group=0):
         # A shortcut for adding handlers

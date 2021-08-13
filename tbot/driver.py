@@ -2,6 +2,7 @@ import re
 import sqlite3
 from enum import Flag
 from pathlib import Path
+from threading import Lock
 
 from . import strings
 
@@ -33,11 +34,40 @@ class FlagPreferences(Flag):
         return getattr(strings.Preferences, self.name)['values'][value]['choice']
 
 
+default_flag_prefs = sum(pref.value * pref.default_value for pref in FlagPreferences)
+
+
+class MTSQLConnection(sqlite3.Connection):
+    """SQLite connection with a lock"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = Lock()
+
+    @property
+    def lock(self):
+        return self._lock
+
+    # Use the lock when used as context manager
+    def __enter__(self):
+        self._lock.acquire()
+        try:
+            return super().__enter__()
+        except Exception:  # is it possible?
+            self._lock.release()
+            raise
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        result = super().__exit__(exc_type, exc_val, exc_tb)
+        self._lock.release()
+        return result
+
+
 class Driver:
     valid_dirname = re.compile(r'^[\w. -]+$')
 
     def __init__(self, *, data_dir: Path, reserved_space: int, client_cfg, ftp_cfg, job_queue):
-        self._db = sqlite3.Connection(data_dir / 'data.db')
+        self._db = sqlite3.connect(data_dir / 'data.db',
+                                   factory=MTSQLConnection, check_same_thread=False)
         ...
         self._init_db()
 
@@ -45,11 +75,17 @@ class Driver:
     def ftp_enabled(self):
         return ...
 
-    def get_whitelist(self):
-        ...
+    def is_valid_user(self, uid):
+        with self._db:
+            return self._db.execute(
+                'SELECT id FROM users WHERE id = ?', (uid,)
+            ).fetchone() is not None
 
-    def whitelist_user(self, user):
-        ...
+    def add_user(self, uid):
+        with self._db:
+            self._db.execute(
+                'INSERT INTO users VALUES (?, ?)', (uid, default_flag_prefs)
+            )
 
     def get_speed_limits(self):
         ...
@@ -67,4 +103,23 @@ class Driver:
         return self.valid_dirname.match(dirname) and dirname not in ['.', '..']
 
     def _init_db(self):
-        pass
+        with self._db:  # subclass sqlite3.Connection to lock automatically?
+            if self._db.execute(
+                    'SELECT name FROM sqlite_master WHERE type=\'table\' AND name=torrents'
+            ).fetchone() is not None:
+                return
+            self._db.execute(
+                'CREATE TABLE users(id INT PRIMARY KEY, flag_preferences INT)'
+            )
+            self._db.execute(
+                'CREATE TABLE torrents('
+                'hash BLOB PRIMARY KEY,'
+                'owner INT,'
+                'is_watched INT,'
+                'is_shared INT,'
+                'FOREIGN KEY(owner) REFERENCES users(id)'
+                ')'
+            )
+            self._db.execute('CREATE INDEX torrents_owner_idx on torrents(owner)')
+            self._db.execute('CREATE INDEX torrents_watched_idx on torrents(is_watched)')
+            self._db.execute('CREATE INDEX torrents_shared_idx on torrents(is_shared)')
