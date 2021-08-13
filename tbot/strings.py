@@ -22,8 +22,7 @@ def format_speed(bps):
     return f'{bps:.2f} MB/s'
 
 
-def help:
-    return """\
+help = """\
 Пришлите боту .torrent-файл для начала загрузки
 
 Доступные команды:
